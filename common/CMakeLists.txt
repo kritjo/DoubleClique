@@ -1,4 +1,4 @@
-add_library(commonLib STATIC superfasthash.c superfasthash.h)
+add_library(commonLib STATIC super_fast_hash.c super_fast_hash.h)
 
 target_include_directories(commonLib
         PUBLIC

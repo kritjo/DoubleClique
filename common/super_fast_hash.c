@@ -1,9 +1,9 @@
-#include "superfasthash.h"
+#include "super_fast_hash.h"
 
 /*
  * The following hash function is made by Paul Hsieh and can be found on http://www.azillionmonkeys.com/qed/hash.html.
  * It is licensed under the LGPL 2.1 license (http://www.gnu.org/licenses/lgpl-2.1.txt).
- * It has been adopted to C23 by kritjo.
+ * It has been adopted to C23, and this project's code-conversions by kritjo.
  */
 
 #include "stdint.h"
@@ -18,7 +18,7 @@
                        +(uint32_t)(((const uint8_t *)(d))[0]) )
 #endif
 
-uint32_t SuperFastHash (const char * data, int len) {
+uint32_t super_fast_hash(const char * data, int len) {
     uint32_t hash = len, tmp;
     int rem;
 
