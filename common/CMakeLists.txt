@@ -5,4 +5,4 @@ add_library(commonLib STATIC
 
 target_include_directories(commonLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-target_compile_features(commonLib PUBLIC c_std_23)
+target_compile_features(commonLib PUBLIC c_std_17)
