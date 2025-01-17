@@ -10,8 +10,9 @@
 #include "sisci_glob_defs.h"
 #include "super_fast_hash.h"
 #include "index_data_protocol.h"
-#include "buddy_alloc.h"
 
+#define BUDDY_ALLOC_IMPLEMENTATION
+#include "buddy_alloc.h"
 
 int put_request_region_poller(void *arg) {
     put_request_region_poller_thread_args_t *args = (put_request_region_poller_thread_args_t *) arg;
@@ -37,7 +38,7 @@ int put_request_region_poller(void *arg) {
          PUT_REQUEST_SEGMENT_SIZE,
          NO_CALLBACK,
          NO_ARG,
-         NO_FLAGS);
+         SCI_FLAG_BROADCAST);
 
     SEOE(SCIPrepareSegment,
          put_request_segment.local,
