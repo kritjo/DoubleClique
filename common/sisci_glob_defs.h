@@ -1,7 +1,12 @@
 #ifndef SISCI_PERF_SISCI_GLOB_DEFS_H
 #define SISCI_PERF_SISCI_GLOB_DEFS_H
 
-#define PUT_BROADCAST_GROUP_ID 1
+#define PUT_REQUEST_SEGMENT_ID 1
+
+#define MIN_SIZE_ELEMENT 8
+
+static int replica_index_segment_id[3] = {101, 102, 103};
+static int replica_data_segment_id[3] = {201, 202, 203};
 
 #define ADAPTER_NO 0
 

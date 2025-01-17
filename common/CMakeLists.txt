@@ -4,6 +4,8 @@ add_library(commonLib STATIC
         buddy_alloc.h
         linked_list.c
         linked_list.h
+        put_request_region_protocol.h
+        index_data_protocol.h
 )
 
 target_include_directories(commonLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
