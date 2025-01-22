@@ -110,12 +110,19 @@ int put_request_region_poller(void *arg) {
             uint32_t key_hash = super_fast_hash((void *) key, slot_read->key_length);
             bool inserted = false;
             for (uint8_t slot = 0; slot < INDEX_SLOTS_PR_BUCKET; slot++) {
-                index_entry *index_slot = (index_entry *) GET_SLOT_POINTER((char *) args->index_region, key_hash%INDEX_BUCKETS, slot);
+                index_entry_t *index_slot = (index_entry_t *) GET_SLOT_POINTER((char *) args->index_region, key_hash % INDEX_BUCKETS, slot);
                 if (index_slot->status == 0) continue;
 
-                void *data_location_in_table = buddy_malloc(buddy, slot_read->value_length);
-                memcpy(data_location_in_table, data, slot_read->value_length);
+                // Allocate a new slot, this means that we would need to TODO: garbage collect the old slot and buddy_free
+                void *allocated_data_table = buddy_malloc(buddy, slot_read->value_length+sizeof(data_entry_preamble_t));
 
+                data_entry_preamble_t *data_entry_preamble = (data_entry_preamble_t *) allocated_data_table;
+                data_entry_preamble->key_length = slot_read->key_length;
+                data_entry_preamble->data_length = slot_read->value_length;
+
+                void *data_location_in_table = (char *) allocated_data_table + sizeof(*data_entry_preamble);
+                memcpy(data_location_in_table, data, slot_read->value_length);
+                
                 inserted = true;
             }
             if (inserted) {
@@ -124,7 +131,6 @@ int put_request_region_poller(void *arg) {
                 //TODO: see line below
                 fprintf(stderr, "Did not find any available slots for request, should probably handle this somehow\n");
             }
-
             slot_write->replica_ack[args->replica_number] = true;
         }
     }

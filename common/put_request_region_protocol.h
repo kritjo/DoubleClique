@@ -38,7 +38,6 @@ typedef struct {
     bool replica_ack[3];
     uint8_t key_length; // NOT including null byte - just like strlen
     uint32_t value_length;
-    uint32_t checksum;
 } put_request_slot_preamble_t;
 
 #endif //DOUBLECLIQUE_PUT_REQUEST_REGION_PROTOCOL_H
