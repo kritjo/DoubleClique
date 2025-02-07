@@ -46,9 +46,11 @@ size_t buddy_sizeof_alignment(size_t memory_size, size_t alignment);
 
 /* Initializes a binary buddy memory allocator at the specified location */
 struct buddy *buddy_init(unsigned char *at, unsigned char *main, size_t memory_size);
+struct volatile_buddy *volatile_buddy_init(unsigned char *at, volatile unsigned char *main, size_t memory_size);
 
 /* Initializes a binary buddy memory allocator at the specified location using a non-default alignment */
 struct buddy *buddy_init_alignment(unsigned char *at, unsigned char *main, size_t memory_size, size_t alignment);
+struct volatile_buddy *volatile_buddy_init_alignment(unsigned char *at, volatile unsigned char *main, size_t memory_size, size_t alignment);
 
 /*
  * Initializes a binary buddy memory allocator embedded in the specified arena.
@@ -113,6 +115,7 @@ size_t buddy_arena_free_size(struct buddy *buddy);
 
 /* Use the specified buddy to allocate memory. See malloc. */
 void *buddy_malloc(struct buddy *buddy, size_t requested_size);
+volatile void *volatile_buddy_malloc(struct volatile_buddy *buddy, size_t requested_size);
 
 /* Use the specified buddy to allocate zeroed memory. See calloc. */
 void *buddy_calloc(struct buddy *buddy, size_t members_count, size_t member_size);
@@ -491,6 +494,16 @@ struct buddy {
     size_t buddy_flags;
 };
 
+struct volatile_buddy {
+    size_t memory_size;
+    size_t alignment;
+    union {
+        volatile unsigned char *main;
+        ptrdiff_t main_offset;
+    } arena;
+    size_t buddy_flags;
+};
+
 struct buddy_embed_check {
     unsigned int can_fit;
     size_t offset;
@@ -500,15 +513,23 @@ struct buddy_embed_check {
 static unsigned int is_valid_alignment(size_t alignment);
 static size_t buddy_tree_order_for_memory(size_t memory_size, size_t alignment);
 static size_t depth_for_size(struct buddy *buddy, size_t requested_size);
+static size_t volatile_depth_for_size(struct volatile_buddy *buddy, size_t requested_size);
 static inline size_t size_for_depth(struct buddy *buddy, size_t depth);
+static inline size_t volatile_size_for_depth(struct volatile_buddy *buddy, size_t depth);
 static unsigned char *address_for_position(struct buddy *buddy, struct buddy_tree_pos pos);
+static volatile unsigned char *volatile_address_for_position(struct volatile_buddy *buddy, struct buddy_tree_pos pos);
 static struct buddy_tree_pos position_for_address(struct buddy *buddy, const unsigned char *addr);
 static unsigned char *buddy_main(struct buddy *buddy);
+static volatile unsigned char *volatile_buddy_main(struct volatile_buddy *buddy);
 static unsigned int buddy_relative_mode(struct buddy *buddy);
+static unsigned int volatile_buddy_relative_mode(struct volatile_buddy *buddy);
 static struct buddy_tree *buddy_tree(struct buddy *buddy);
+static struct buddy_tree *volatile_buddy_tree(struct volatile_buddy *buddy);
 static size_t buddy_effective_memory_size(struct buddy *buddy);
+static size_t volatile_buddy_effective_memory_size(struct volatile_buddy *buddy);
 static size_t buddy_virtual_slots(struct buddy *buddy);
 static void buddy_toggle_virtual_slots(struct buddy *buddy, unsigned int state);
+static void volatile_buddy_toggle_virtual_slots(struct volatile_buddy *buddy, unsigned int state);
 static void buddy_toggle_range_reservation(struct buddy *buddy, void *ptr, size_t requested_size, unsigned int state);
 static struct buddy *buddy_resize_standard(struct buddy *buddy, size_t new_memory_size);
 static struct buddy *buddy_resize_embedded(struct buddy *buddy, size_t new_memory_size);
@@ -535,6 +556,10 @@ size_t buddy_sizeof_alignment(size_t memory_size, size_t alignment) {
 
 struct buddy *buddy_init(unsigned char *at, unsigned char *main, size_t memory_size) {
     return buddy_init_alignment(at, main, memory_size, BUDDY_ALLOC_ALIGN);
+}
+
+struct volatile_buddy *volatile_buddy_init(unsigned char *at, volatile unsigned char *main, size_t memory_size) {
+    return volatile_buddy_init_alignment(at, main, memory_size, BUDDY_ALLOC_ALIGN);
 }
 
 struct buddy *buddy_init_alignment(unsigned char *at, unsigned char *main, size_t memory_size,
@@ -580,6 +605,52 @@ struct buddy *buddy_init_alignment(unsigned char *at, unsigned char *main, size_
     buddy->alignment = alignment;
     buddy_tree_init((unsigned char *)buddy + sizeof(*buddy), (uint8_t) buddy_tree_order);
     buddy_toggle_virtual_slots(buddy, 1);
+    return buddy;
+}
+
+struct volatile_buddy *volatile_buddy_init_alignment(unsigned char *at, volatile unsigned char *main, size_t memory_size,
+                                   size_t alignment) {
+    size_t at_alignment, main_alignment, buddy_size, buddy_tree_order;
+    struct volatile_buddy *buddy;
+
+    if (at == NULL) {
+        return NULL;
+    }
+    if (main == NULL) {
+        return NULL;
+    }
+    if (at == main) {
+        return NULL;
+    }
+    if (!is_valid_alignment(alignment)) {
+        return NULL; /* invalid */
+    }
+    at_alignment = ((uintptr_t) at) % BUDDY_ALIGNOF(struct volatile_buddy);
+    if (at_alignment != 0) {
+        return NULL;
+    }
+    main_alignment = ((uintptr_t) main) % BUDDY_ALIGNOF(size_t);
+    if (main_alignment != 0) {
+        return NULL;
+    }
+    /* Trim down memory to alignment */
+    if (memory_size % alignment) {
+        memory_size -= (memory_size % alignment);
+    }
+    buddy_size = buddy_sizeof_alignment(memory_size, alignment);
+    if (buddy_size == 0) {
+        return NULL;
+    }
+    buddy_tree_order = buddy_tree_order_for_memory(memory_size, alignment);
+
+    /* TODO check for overlap between buddy metadata and main block */
+    buddy = (struct volatile_buddy *) at;
+    buddy->arena.main = main;
+    buddy->memory_size = memory_size;
+    buddy->buddy_flags = 0;
+    buddy->alignment = alignment;
+    buddy_tree_init((unsigned char *)buddy + sizeof(*buddy), (uint8_t) buddy_tree_order);
+    volatile_buddy_toggle_virtual_slots(buddy, 1);
     return buddy;
 }
 
@@ -795,6 +866,44 @@ void *buddy_malloc(struct buddy *buddy, size_t requested_size) {
     return address_for_position(buddy, pos);
 }
 
+volatile void *volatile_buddy_malloc(struct volatile_buddy *buddy, size_t requested_size) {
+    size_t target_depth;
+    struct buddy_tree *tree;
+    struct buddy_tree_pos pos;
+
+    if (buddy == NULL) {
+        return NULL;
+    }
+    if (requested_size == 0) {
+        /*
+         * Batshit crazy code exists that calls malloc(0) and expects
+         * a result that can be safely passed to free().
+         * And even though this allocator will safely handle a free(NULL)
+         * the particular batshit code will expect a non-NULL malloc(0) result!
+         *
+         * See also https://wiki.sei.cmu.edu/confluence/display/c/MEM04-C.+Beware+of+zero-length+allocations
+         */
+        requested_size = 1;
+    }
+    if (requested_size > buddy->memory_size) {
+        return NULL;
+    }
+
+    target_depth = volatile_depth_for_size(buddy, requested_size);
+    tree = volatile_buddy_tree(buddy);
+    pos = buddy_tree_find_free(tree, (uint8_t) target_depth);
+
+    if (! buddy_tree_valid(tree, pos)) {
+        return NULL; /* no slot found */
+    }
+
+    /* Allocate the slot */
+    buddy_tree_mark(tree, pos);
+
+    /* Find and return the actual memory address */
+    return volatile_address_for_position(buddy, pos);
+}
+
 void *buddy_calloc(struct buddy *buddy, size_t members_count, size_t member_size) {
     size_t total_size;
     void *result;
@@ -964,10 +1073,10 @@ enum buddy_safe_free_status buddy_safe_free(struct buddy* buddy, void* ptr, size
     status = buddy_tree_release(tree, pos);
 
     switch (status) {
-    case BUDDY_TREE_RELEASE_FAIL_PARTIALLY_USED:
-        return BUDDY_SAFE_FREE_INVALID_ADDRESS;
-    case BUDDY_TREE_RELEASE_SUCCESS:
-        break;
+        case BUDDY_TREE_RELEASE_FAIL_PARTIALLY_USED:
+            return BUDDY_SAFE_FREE_INVALID_ADDRESS;
+        case BUDDY_TREE_RELEASE_SUCCESS:
+            break;
     }
 
     return BUDDY_SAFE_FREE_SUCCESS;
@@ -1084,7 +1193,25 @@ static size_t depth_for_size(struct buddy *buddy, size_t requested_size) {
     return depth;
 }
 
+static size_t volatile_depth_for_size(struct volatile_buddy *buddy, size_t requested_size) {
+    size_t depth, effective_memory_size;
+    if (requested_size < buddy->alignment) {
+        requested_size = buddy->alignment;
+    }
+    depth = 1;
+    effective_memory_size = volatile_buddy_effective_memory_size(buddy);
+    while ((effective_memory_size / requested_size) >> 1u) {
+        depth++;
+        effective_memory_size >>= 1u;
+    }
+    return depth;
+}
+
 static inline size_t size_for_depth(struct buddy *buddy, size_t depth) {
+    return ceiling_power_of_two(buddy->memory_size) >> (depth-1);
+}
+
+static inline size_t volatile_size_for_depth(struct volatile_buddy *buddy, size_t depth) {
     return ceiling_power_of_two(buddy->memory_size) >> (depth-1);
 }
 
@@ -1092,7 +1219,15 @@ static struct buddy_tree *buddy_tree(struct buddy *buddy) {
     return (struct buddy_tree*) ((unsigned char *)buddy + sizeof(*buddy));
 }
 
+static struct buddy_tree *volatile_buddy_tree(struct volatile_buddy *buddy) {
+    return (struct buddy_tree*) ((unsigned char *)buddy + sizeof(*buddy));
+}
+
 static size_t buddy_effective_memory_size(struct buddy *buddy) {
+    return ceiling_power_of_two(buddy->memory_size);
+}
+
+static size_t volatile_buddy_effective_memory_size(struct volatile_buddy *buddy) {
     return ceiling_power_of_two(buddy->memory_size);
 }
 
@@ -1109,6 +1244,12 @@ static unsigned char *address_for_position(struct buddy *buddy, struct buddy_tre
     size_t block_size = size_for_depth(buddy, buddy_tree_depth(pos));
     size_t addr = block_size * buddy_tree_index(pos);
     return buddy_main(buddy) + addr;
+}
+
+static volatile unsigned char *volatile_address_for_position(struct volatile_buddy *buddy, struct buddy_tree_pos pos) {
+    size_t block_size = volatile_size_for_depth(buddy, buddy_tree_depth(pos));
+    size_t addr = block_size * buddy_tree_index(pos);
+    return volatile_buddy_main(buddy) + addr;
 }
 
 static struct buddy_tree_pos deepest_position_for_offset(struct buddy *buddy, size_t offset) {
@@ -1157,7 +1298,18 @@ static unsigned char *buddy_main(struct buddy *buddy) {
     return buddy->arena.main;
 }
 
+static volatile unsigned char *volatile_buddy_main(struct volatile_buddy *buddy) {
+    if (volatile_buddy_relative_mode(buddy)) {
+        return (unsigned char *)buddy - buddy->arena.main_offset;
+    }
+    return buddy->arena.main;
+}
+
 static unsigned int buddy_relative_mode(struct buddy *buddy) {
+    return (unsigned int)buddy->buddy_flags & BUDDY_RELATIVE_MODE;
+}
+
+static unsigned int volatile_buddy_relative_mode(struct volatile_buddy *buddy) {
     return (unsigned int)buddy->buddy_flags & BUDDY_RELATIVE_MODE;
 }
 
@@ -1181,6 +1333,57 @@ static void buddy_toggle_virtual_slots(struct buddy *buddy, unsigned int state) 
     pos = buddy_tree_right_child(buddy_tree_root());
     while (delta) {
         size_t current_pos_size = size_for_depth(buddy, buddy_tree_depth(pos));
+        if (delta == current_pos_size) {
+            /* toggle current pos */
+            if (state) {
+                buddy_tree_mark(tree, pos);
+            }
+            else {
+                buddy_tree_release(tree, pos);
+            }
+            break;
+        }
+        if (delta <= (current_pos_size / 2)) {
+            /* re-run for right child */
+            pos = buddy_tree_right_child(pos);
+            continue;
+        } else {
+            /* toggle right child */
+            if (state) {
+                buddy_tree_mark(tree, buddy_tree_right_child(pos));
+            }
+            else {
+                buddy_tree_release(tree, buddy_tree_right_child(pos));
+            }
+            /* reduce delta */
+            delta -= current_pos_size / 2;
+            /* re-run for left child */
+            pos = buddy_tree_left_child(pos);
+            continue;
+        }
+    }
+}
+
+static void volatile_buddy_toggle_virtual_slots(struct volatile_buddy *buddy, unsigned int state) {
+    size_t delta, memory_size, effective_memory_size;
+    struct buddy_tree *tree;
+    struct buddy_tree_pos pos;
+
+    memory_size = buddy->memory_size;
+    /* Mask/unmask the virtual space if memory is not a power of two */
+    effective_memory_size = volatile_buddy_effective_memory_size(buddy);
+    if (effective_memory_size == memory_size) {
+        return;
+    }
+
+    /* Get the area that we need to mask and pad it to alignment */
+    /* Node memory size is already aligned to buddy->alignment */
+    delta = effective_memory_size - memory_size;
+
+    tree = volatile_buddy_tree(buddy);
+    pos = buddy_tree_right_child(buddy_tree_root());
+    while (delta) {
+        size_t current_pos_size = volatile_size_for_depth(buddy, buddy_tree_depth(pos));
         if (delta == current_pos_size) {
             /* toggle current pos */
             if (state) {
