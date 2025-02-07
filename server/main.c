@@ -6,12 +6,12 @@
 #include "put_request_region.h"
 #include "index_data_protocol.h"
 
-void create_plain_segment_and_set_available(sci_desc_t sd, sci_local_segment_t *segment, int segment_id) {
+void create_plain_segment_and_set_available(sci_desc_t sd, sci_local_segment_t *segment, size_t size, int segment_id) {
     SEOE(SCICreateSegment,
          sd,
          segment,
          segment_id,
-         INDEX_REGION_SIZE,
+         size,
          NO_CALLBACK,
          NO_ARG,
          NO_FLAGS);
@@ -50,11 +50,26 @@ int main(int argc, char* argv[]) {
     SEOE(SCIInitialize, NO_FLAGS);
     SEOE(SCIOpen, &sd, NO_FLAGS);
 
-    create_plain_segment_and_set_available(sd, &index_segment, replica_index_segment_id[replica_id]);
-    create_plain_segment_and_set_available(sd, &data_segment, replica_data_segment_id[replica_id]);
+    create_plain_segment_and_set_available(sd, &index_segment, INDEX_REGION_SIZE, replica_index_segment_id[replica_id]);
+    printf("Made index segment\n");
+    create_plain_segment_and_set_available(sd, &data_segment, DATA_REGION_SIZE, replica_data_segment_id[replica_id]);
+    printf("Made data segment\n");
 
     index = SCIMapLocalSegment(index_segment, &index_map, NO_OFFSET, INDEX_REGION_SIZE, NO_SUGGESTED_ADDRESS, NO_FLAGS, &sci_error);
-    data = SCIMapLocalSegment(data_segment, &data_map, NO_OFFSET, INDEX_REGION_SIZE, NO_SUGGESTED_ADDRESS, NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        fprintf(stderr, "SCIMapLocalSegment failed: %s\n", SCIGetErrorString(sci_error));
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Mapped index segment\n");
+
+    data = SCIMapLocalSegment(data_segment, &data_map, NO_OFFSET, DATA_REGION_SIZE, NO_SUGGESTED_ADDRESS, NO_FLAGS, &sci_error);
+    if (sci_error != SCI_ERR_OK) {
+        fprintf(stderr, "SCIMapLocalSegment failed: %s\n", SCIGetErrorString(sci_error));
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Mapped data segment\n");
 
     put_request_region_poller_thread_args_t args;
     args.sd = sd;

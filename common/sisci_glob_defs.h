@@ -2,11 +2,12 @@
 #define SISCI_PERF_SISCI_GLOB_DEFS_H
 
 #define PUT_REQUEST_SEGMENT_ID 1
+#define REPLICA_COUNT 3
 
 #define MIN_SIZE_ELEMENT 8
 
-static int replica_index_segment_id[3] = {101, 102, 103};
-static int replica_data_segment_id[3] = {201, 202, 203};
+static int replica_index_segment_id[REPLICA_COUNT] = {101, 102, 103};
+static int replica_data_segment_id[REPLICA_COUNT] = {201, 202, 203};
 
 #define ADAPTER_NO 0
 

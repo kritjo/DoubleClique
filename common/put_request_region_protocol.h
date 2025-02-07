@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include "sisci_glob_defs.h"
 
 typedef enum {
@@ -19,7 +20,7 @@ typedef struct {
     put_request_region_status_t status;
     uint8_t sisci_node_id; // Only valid when status != 0
     uint32_t slots_used;
-    uint32_t slot_offset_starts[MAX_PUT_REQUEST_SLOTS];
+    ptrdiff_t slot_offset_starts[MAX_PUT_REQUEST_SLOTS];
     uint8_t units[PUT_REQUEST_REGION_SIZE];
 } put_request_region_t;
 
@@ -35,9 +36,10 @@ typedef enum {
  */
 typedef struct {
     put_request_slot_status_t status;
-    bool replica_ack[3];
+    bool replica_ack[REPLICA_COUNT];
     uint8_t key_length; // NOT including null byte - just like strlen
     uint32_t value_length;
+    uint32_t version_number;
 } put_request_slot_preamble_t;
 
 #endif //DOUBLECLIQUE_PUT_REQUEST_REGION_PROTOCOL_H
