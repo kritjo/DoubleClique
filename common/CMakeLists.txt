@@ -6,8 +6,12 @@ add_library(commonLib STATIC
         linked_list.h
         put_request_region_protocol.h
         index_data_protocol.h
+        get_node_id.c
+        get_node_id.h
 )
 
 target_include_directories(commonLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_compile_features(commonLib PUBLIC c_std_17)
+
+target_link_libraries(commonLib PRIVATE SISCI)

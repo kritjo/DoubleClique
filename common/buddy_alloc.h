@@ -129,6 +129,8 @@ void *buddy_reallocarray(struct buddy *buddy, void *ptr,
 
 /* Use the specified buddy to free memory. See free. */
 void buddy_free(struct buddy *buddy, void *ptr);
+void volatile_buddy_free(struct volatile_buddy *buddy, volatile void *ptr);
+
 
 enum buddy_safe_free_status {
     BUDDY_SAFE_FREE_SUCCESS,
@@ -519,6 +521,7 @@ static inline size_t volatile_size_for_depth(struct volatile_buddy *buddy, size_
 static unsigned char *address_for_position(struct buddy *buddy, struct buddy_tree_pos pos);
 static volatile unsigned char *volatile_address_for_position(struct volatile_buddy *buddy, struct buddy_tree_pos pos);
 static struct buddy_tree_pos position_for_address(struct buddy *buddy, const unsigned char *addr);
+static struct buddy_tree_pos volatile_position_for_address(struct volatile_buddy *buddy, volatile const unsigned char *addr);
 static unsigned char *buddy_main(struct buddy *buddy);
 static volatile unsigned char *volatile_buddy_main(struct volatile_buddy *buddy);
 static unsigned int buddy_relative_mode(struct buddy *buddy);
@@ -536,6 +539,7 @@ static struct buddy *buddy_resize_embedded(struct buddy *buddy, size_t new_memor
 static bool buddy_is_free(struct buddy *buddy, size_t from);
 static struct buddy_embed_check buddy_embed_offset(size_t memory_size, size_t alignment);
 static struct buddy_tree_pos deepest_position_for_offset(struct buddy *buddy, size_t offset);
+static struct buddy_tree_pos volatile_deepest_position_for_offset(struct volatile_buddy *buddy, size_t offset);
 
 size_t buddy_sizeof(size_t memory_size) {
     return buddy_sizeof_alignment(memory_size, BUDDY_ALLOC_ALIGN);
@@ -1031,6 +1035,35 @@ void buddy_free(struct buddy *buddy, void *ptr) {
     buddy_tree_release(tree, pos);
 }
 
+void volatile_buddy_free(struct volatile_buddy *buddy, volatile void *ptr) {
+    volatile unsigned char *dst, *main;
+    struct buddy_tree *tree;
+    struct buddy_tree_pos pos;
+
+    if (buddy == NULL) {
+        return;
+    }
+    if (ptr == NULL) {
+        return;
+    }
+    dst = (volatile unsigned char *)ptr;
+    main = volatile_buddy_main(buddy);
+    if ((dst < main) || (dst >= (main + buddy->memory_size))) {
+        return;
+    }
+
+    /* Find the position tracking this address */
+    tree = volatile_buddy_tree(buddy);
+    pos = volatile_position_for_address(buddy, dst);
+
+    if (! buddy_tree_valid(tree, pos)) {
+        return;
+    }
+
+    /* Release the position */
+    buddy_tree_release(tree, pos);
+}
+
 enum buddy_safe_free_status buddy_safe_free(struct buddy* buddy, void* ptr, size_t requested_size) {
     unsigned char* dst, * main;
     struct buddy_tree* tree;
@@ -1259,6 +1292,13 @@ static struct buddy_tree_pos deepest_position_for_offset(struct buddy *buddy, si
     return pos;
 }
 
+static struct buddy_tree_pos volatile_deepest_position_for_offset(struct volatile_buddy *buddy, size_t offset) {
+    size_t index = offset / buddy->alignment;
+    struct buddy_tree_pos pos = buddy_tree_leftmost_child(volatile_buddy_tree(buddy));
+    pos.index += index;
+    return pos;
+}
+
 static struct buddy_tree_pos position_for_address(struct buddy *buddy, const unsigned char *addr) {
     unsigned char *main;
     struct buddy_tree *tree;
@@ -1285,6 +1325,38 @@ static struct buddy_tree_pos position_for_address(struct buddy *buddy, const uns
     }
 
     if (address_for_position(buddy, pos) != addr) {
+        return INVALID_POS; /* invalid alignment */
+    }
+
+    return pos;
+}
+
+static struct buddy_tree_pos volatile_position_for_address(struct volatile_buddy *buddy, volatile const unsigned char *addr) {
+    volatile unsigned char *main;
+    struct buddy_tree *tree;
+    struct buddy_tree_pos pos;
+    size_t offset;
+
+    main = volatile_buddy_main(buddy);
+    offset = (size_t) (addr - main);
+
+    if (offset % buddy->alignment) {
+        return INVALID_POS; /* invalid alignment */
+    }
+
+    tree = volatile_buddy_tree(buddy);
+    pos = volatile_deepest_position_for_offset(buddy, offset);
+
+    /* Find the actual allocated position tracking this address */
+    while (!buddy_tree_status(tree, pos)) {
+        pos = buddy_tree_parent(pos);
+
+        if (!buddy_tree_valid(tree, pos)) {
+            return INVALID_POS;
+        }
+    }
+
+    if (volatile_address_for_position(buddy, pos) != addr) {
         return INVALID_POS; /* invalid alignment */
     }
 

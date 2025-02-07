@@ -11,10 +11,10 @@
 #define DATA_REGION_SIZE 0x400000
 
 typedef struct {
-    uint16_t status; //0 for unused, 1 for used
     uint32_t hash;
     uint32_t version_number;
     ptrdiff_t offset;
+    uint16_t status; //0 for unused, 1 for used
 } index_entry_t;
 
 // This definition takes a pointer to the start of a index region, and given a bucket number and a slot number

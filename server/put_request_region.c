@@ -16,13 +16,10 @@
 
 int put_request_region_poller(void *arg) {
     put_request_region_poller_thread_args_t *args = (put_request_region_poller_thread_args_t *) arg;
-
     sci_error_t sci_error;
 
     sci_local_segment_t put_request_segment_read;
-
     sci_map_t put_request_map_read;
-
     put_request_region_t *put_request_segment_data_read;
 
     // Set up request region
@@ -66,16 +63,28 @@ int put_request_region_poller(void *arg) {
     void *buddy_metadata = malloc(buddy_sizeof(DATA_REGION_SIZE));
     struct buddy *buddy = buddy_init(buddy_metadata, args->data_region, DATA_REGION_SIZE);
 
-    // Wait until thread is ready
-    while (put_request_segment_data_read->status == UNUSED) thrd_yield();
-
-    printf("Entering main loop, slots used: %d\n", put_request_segment_data_read->slots_used);
+    bool inited = false;
+    sci_remote_data_interrupt_t ack_data_interrupt;
 
     //Enter main loop
-    while (put_request_segment_data_read->status != EXITED) {
-        if (put_request_segment_data_read->status == LOCKED) {
+    while (1) {
+        if (put_request_segment_data_read->status == LOCKED || put_request_segment_data_read->status == UNUSED) {
             thrd_yield();
             continue;
+        }
+
+        if (!inited) {
+            printf("Connecting to node id %u\n", put_request_segment_data_read->sisci_node_id);
+            SEOE(SCIConnectDataInterrupt,
+                 args->sd,
+                 &ack_data_interrupt,
+                 put_request_segment_data_read->sisci_node_id,
+                 ADAPTER_NO,
+                 ACK_DATA_INTERRUPT_NO,
+                 SCI_INFINITE_TIMEOUT,
+                 NO_FLAGS);
+
+            inited = true;
         }
 
         // Now, the status is WALKABLE and we should walk it
@@ -138,7 +147,11 @@ int put_request_region_poller(void *arg) {
                 fprintf(stderr, "Did not find any available slots for request, should probably handle this somehow\n");
             }
 
-            // TODO: ACK the insertion
+            put_ack_t put_ack;
+            put_ack.replica_no = args->replica_number;
+            put_ack.slot_no = i;
+
+            SEOE(SCITriggerDataInterrupt, ack_data_interrupt, &put_ack, sizeof(put_ack), NO_FLAGS);
 
             free(key);
         }

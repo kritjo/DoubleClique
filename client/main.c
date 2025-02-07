@@ -9,7 +9,7 @@
 
 #define BUDDY_ALLOC_IMPLEMENTATION
 #include "buddy_alloc.h"
-
+#include "get_node_id.h"
 
 int main(int argc, char* argv[]) {
     sci_desc_t sd;
@@ -28,6 +28,8 @@ int main(int argc, char* argv[]) {
     sci_map_t data_region_map[REPLICA_COUNT];
     volatile void *data_region_start[REPLICA_COUNT];
 
+    sci_local_data_interrupt_t ack_data_interrupt;
+
     if (argc < REPLICA_COUNT + 1) {
         fprintf(stderr, "Usage: %s replica_id[0] ... replica_id[n]\n", argv[0]);
     }
@@ -45,8 +47,6 @@ int main(int argc, char* argv[]) {
          SCI_INFINITE_TIMEOUT,
          SCI_FLAG_BROADCAST);
 
-    printf("Connected to put broadcast segment\n");
-
     printf("sizeof(put_request_region_t): %ld\n", sizeof(put_request_region_t));
     put_request_region = (volatile put_request_region_t*) SCIMapRemoteSegment(put_request_segment,
                                                                               &put_request_map,
@@ -61,8 +61,6 @@ int main(int argc, char* argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    printf("Mapped broadcast segment\n");
-
     for (int replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
         const char *replica_str_node_id = argv[1 + replica_index];
         char *endptr;
@@ -74,7 +72,6 @@ int main(int argc, char* argv[]) {
         }
         replica_node_ids[replica_index] = (uint8_t) num;
 
-        printf("Handling replica %d with node id %d\n", replica_index, replica_node_ids[replica_index]);
         SEOE(SCIConnectSegment,
              sd,
              &index_region_segments[replica_index],
@@ -85,8 +82,6 @@ int main(int argc, char* argv[]) {
              NO_ARG,
              SCI_INFINITE_TIMEOUT,
              NO_FLAGS);
-
-        printf("Connected to index segment\n");
 
         index_region_start[replica_index] = SCIMapRemoteSegment(index_region_segments[replica_index],
                                                                 &index_region_map[replica_index],
@@ -101,8 +96,6 @@ int main(int argc, char* argv[]) {
             exit(EXIT_FAILURE);
         }
 
-        printf("Mapped to index segment\n");
-
         SEOE(SCIConnectSegment,
              sd,
              &data_region_segments[replica_index],
@@ -113,9 +106,6 @@ int main(int argc, char* argv[]) {
              NO_ARG,
              SCI_INFINITE_TIMEOUT,
              NO_FLAGS);
-
-
-        printf("Connected to put data segment\n");
 
         data_region_start[replica_index] = SCIMapRemoteSegment(data_region_segments[replica_index],
                                                                &data_region_map[replica_index],
@@ -129,9 +119,17 @@ int main(int argc, char* argv[]) {
             fprintf(stderr, "SCIMapLocalSegment failed: %s\n", SCIGetErrorString(sci_error));
             exit(EXIT_FAILURE);
         }
-
-        printf("Mapped to data segment\n");
     }
+
+    uint ack_interrupt_no = ACK_DATA_INTERRUPT_NO;
+    SEOE(SCICreateDataInterrupt,
+         sd,
+         &ack_data_interrupt,
+         ADAPTER_NO,
+         &ack_interrupt_no,
+         NO_CALLBACK,
+         NO_ARG,
+         SCI_FLAG_FIXED_INTNO);
 
     // Just to test we can try to allocate a single put region
 
@@ -181,11 +179,33 @@ int main(int argc, char* argv[]) {
 
     sample_preamble->status = PUT;
 
+    unsigned int node_id = get_node_id();
+    if (node_id > UINT8_MAX) {
+        fprintf(stderr, "node_id too large!\n");
+        exit(EXIT_FAILURE);
+    }
+    put_request_region->sisci_node_id = (uint8_t) node_id;
     put_request_region->status = WALKABLE;
 
-    printf("Put bytes in place\n");
+    uint8_t acks_received = 0;
+    put_ack_t put_ack;
+    unsigned int length_recv = sizeof(put_ack);
 
-    while(1); // TODO: Should get an ack as the next step. then we need to make the library interface
+    while(acks_received < REPLICA_COUNT) {
+        SEOE(SCIWaitForDataInterrupt,
+             ack_data_interrupt,
+             (void *) &put_ack,
+             &length_recv,
+             SCI_INFINITE_TIMEOUT,
+             NO_FLAGS);
+
+        acks_received++;
+    }
+
+    put_request_region->status = LOCKED;
+    volatile_buddy_free(buddy, data);
+    put_request_region->slots_used = 0;
+    put_request_region->status = UNUSED;
 
     free(buddy_metadata);
 
