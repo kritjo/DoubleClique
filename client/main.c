@@ -12,7 +12,12 @@
 #include "get_node_id.h"
 
 static sci_local_data_interrupt_t ack_data_interrupt;
-void put(volatile put_request_slot_preamble_t *preamble, const char *key, uint8_t key_len, void *value, uint32_t value_len);
+static void *buddy_metadata;
+static struct volatile_buddy *buddy;
+static volatile put_request_region_t *put_request_region;
+
+static uint32_t allocated_slots = 0;
+slot_metadata_t slots[MAX_PUT_REQUEST_SLOTS];
 
 int main(int argc, char* argv[]) {
     sci_desc_t sd;
@@ -21,7 +26,6 @@ int main(int argc, char* argv[]) {
 
     sci_remote_segment_t put_request_segment;
     sci_map_t put_request_map;
-    volatile put_request_region_t *put_request_region;
 
     sci_remote_segment_t index_region_segments[REPLICA_COUNT];
     sci_map_t index_region_map[REPLICA_COUNT];
@@ -127,15 +131,15 @@ int main(int argc, char* argv[]) {
          &ack_data_interrupt,
          ADAPTER_NO,
          &ack_interrupt_no,
-         NO_CALLBACK,
+         put_ack,
          NO_ARG,
-         SCI_FLAG_FIXED_INTNO);
+         SCI_FLAG_USE_CALLBACK | SCI_FLAG_FIXED_INTNO);
 
-    // Just to test we can try to allocate a single put region
+    // Just to test we can try to allocate a single put_into_slot region
 
     size_t arena_size = PUT_REQUEST_REGION_SIZE;
-    void *buddy_metadata = malloc(buddy_sizeof(arena_size));
-    struct volatile_buddy *buddy = volatile_buddy_init(buddy_metadata, put_request_region->units, arena_size);
+    buddy_metadata = malloc(buddy_sizeof(arena_size));
+    buddy = volatile_buddy_init(buddy_metadata, put_request_region->units, arena_size);
 
     unsigned int node_id = get_node_id();
     if (node_id > UINT8_MAX) {
@@ -144,23 +148,6 @@ int main(int argc, char* argv[]) {
     }
     put_request_region->sisci_node_id = (uint8_t) node_id;
 
-    put_request_region->status = LOCKED;
-    put_request_region->slots_used = 1;
-
-    size_t sample_size = 2048 + sizeof(put_request_slot_preamble_t);
-    volatile void *data = volatile_buddy_malloc(buddy, sample_size);
-    ptrdiff_t offset = ((volatile uint8_t *) data) - put_request_region->units;
-    put_request_region->slot_offset_starts[0] = offset;
-
-    // Load with some sample data, starting with the preamble -- TODO: we should only broadcast using memcpy with a single transaction
-    volatile put_request_slot_preamble_t *sample_preamble = (volatile put_request_slot_preamble_t *) data;
-    sample_preamble->status = FREE;
-
-    for (int replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
-        sample_preamble->replica_ack[replica_index] = 0;
-    }
-    put_request_region->status = WALKABLE;
-
     int sample_data[256];
 
     for (int i = 0; i < 256; i++) {
@@ -168,13 +155,12 @@ int main(int argc, char* argv[]) {
     }
 
     char key[] = "tall";
+    uint32_t slot_no = allocate_new_slot(4, 256*sizeof(int));
 
-    put(sample_preamble, key, 4, sample_data, 256 * sizeof(int));
+    put_into_slot(slot_no, key, 4, sample_data, 256 * sizeof(int));
 
-    put_request_region->status = LOCKED;
-    volatile_buddy_free(buddy, data);
-    put_request_region->slots_used = 0;
-    put_request_region->status = UNUSED;
+    // TODO: How to free the slots in buddy and in general
+    while(1);
 
     free(buddy_metadata);
 
@@ -185,39 +171,91 @@ int main(int argc, char* argv[]) {
 }
 
 // Put key and value into a slot. Both the key and value will be copied. The preamble must be free when entering.
-void put(volatile put_request_slot_preamble_t *preamble, const char *key, uint8_t key_len, void *value, uint32_t value_len) {
-    printf("Putting with key len %u and value len %u\n", key_len, value_len);
-    preamble->key_length = key_len;
-    preamble->value_length = value_len;
-    preamble->version_number = 0xdeadbeef; //TODO: this needs to be computed
+void put_into_slot(uint32_t slot_no, const char *key, uint8_t key_len, void *value, uint32_t value_len) {
+    slot_metadata_t slot = slots[slot_no];
+    if (slot.status != FREE) {
+        fprintf(stderr, "Slot got to be free to put new value into it!\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (slot.total_payload_size < key_len + value_len) {
+        fprintf(stderr, "Tried to put too large payload into slot!\n");
+        exit(EXIT_FAILURE);
+    }
+
+    slot.slot_preamble->key_length = key_len;
+    slot.slot_preamble->value_length = value_len;
+    slot.slot_preamble->version_number = 0xdeadbeef; //TODO: this needs to be computed
 
     //Copy over the key
     for (size_t i = 0; i < key_len; i++) {
-        // Just put in some numbers in increasing order as a sanity check, should be easy to validate
-        *(((volatile char *) preamble + sizeof(put_request_slot_preamble_t) + (i * sizeof(char)))) = key[i];
+        // Just put_into_slot in some numbers in increasing order as a sanity check, should be easy to validate
+        *(((volatile char *) slot.slot_preamble + sizeof(put_request_slot_preamble_t) + (i * sizeof(char)))) = key[i];
     }
 
     // Copy over the value
     for (uint32_t i = 0; i < value_len; i++) {
-        *(((volatile char *) preamble + sizeof(put_request_slot_preamble_t) + key_len + i)) = ((char *)value)[i];
+        *(((volatile char *) slot.slot_preamble + sizeof(put_request_slot_preamble_t) + key_len + i)) = ((char *)value)[i];
     }
 
-    preamble->status = PUT;
+    slot.slot_preamble->status = PUT;
+    slot.status = PUT;
+}
 
-    uint8_t acks_received = 0;
-    put_ack_t put_ack;
-    unsigned int length_recv = sizeof(put_ack);
+uint32_t allocate_new_slot(size_t key_size, size_t value_size) {
+    uint32_t slot_no = allocated_slots++;
 
-    while(acks_received < REPLICA_COUNT) {
-        SEOE(SCIWaitForDataInterrupt,
-             ack_data_interrupt,
-             (void *) &put_ack,
-             &length_recv,
-             SCI_INFINITE_TIMEOUT,
-             NO_FLAGS);
+    put_request_region->status = LOCKED;
+    size_t slot_size = key_size + value_size + sizeof(put_request_slot_preamble_t);
+    volatile void *slot = volatile_buddy_malloc(buddy, slot_size);
+    ptrdiff_t offset = ((volatile uint8_t *) slot) - put_request_region->units;
+    put_request_region->slot_offset_starts[slot_no] = offset;
 
-        acks_received++;
+    // Load with some sample slot, starting with the preamble -- TODO: we should only broadcast using memcpy with a single transaction
+    volatile put_request_slot_preamble_t *slot_preamble = (volatile put_request_slot_preamble_t *) slot;
+    slot_preamble->status = FREE;
+
+    put_request_region->slots_used = allocated_slots;
+    put_request_region->status = WALKABLE;
+
+    slot_metadata_t *slot_metadata = &slots[slot_no];
+    slot_metadata->slot_preamble = slot_preamble;
+    slot_metadata->total_payload_size = key_size + value_size;
+    slot_metadata->status = FREE;
+    slot_metadata->ack_count = 0;
+
+    return slot_no;
+}
+
+// Put ack callback
+sci_callback_action_t put_ack(void *arg, sci_local_data_interrupt_t interrupt, void *data, unsigned int length, sci_error_t status) {
+    if (status != SCI_ERR_OK) {
+        fprintf(stderr, "Received error SCI status from delivery: %s\n", SCIGetErrorString(status));
+        exit(EXIT_FAILURE);
     }
 
-    preamble->status = FREE;
+    if (length != sizeof(put_ack_t)) {
+        fprintf(stderr, "Received invalid length %d from delivery\n", length);
+        exit(EXIT_FAILURE);
+    }
+
+    put_ack_t *put_ack_data = (put_ack_t *) data;
+    slot_metadata_t *slot_metadata = &slots[put_ack_data->slot_no];
+    uint8_t ack_count = ++slot_metadata->ack_count;
+
+    if (ack_count < REPLICA_COUNT)
+        return SCI_CALLBACK_CONTINUE;
+    else if (ack_count > REPLICA_COUNT) {
+        fprintf(stderr, "Got more acks than there are replicas, should not be possible\n");
+        exit(EXIT_FAILURE);
+    }
+    // Got same amount of acks as there are replicas, we must make the slot available again
+    // We do not need this, as the replicas actually put this for us: slot_metadata->slot_preamble->status = FREE;
+
+    printf("Got ALL acks!!\n");
+
+    slot_metadata->ack_count = 0;
+    slot_metadata->status = FREE;
+
+    return SCI_CALLBACK_CONTINUE;
 }

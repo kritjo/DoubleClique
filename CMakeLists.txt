@@ -23,6 +23,7 @@ add_compile_options(
     -Wwrite-strings
     -Wlogical-op
 )
+add_compile_definitions(_REENTRANT)
 
 set(WARNING_AS_ERROR 0)
 

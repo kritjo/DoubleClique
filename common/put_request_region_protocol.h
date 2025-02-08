@@ -33,7 +33,7 @@ typedef struct {
 
 typedef enum {
     FREE,
-    PUT
+    PUT,
 } put_request_slot_status_t;
 
 /*
@@ -42,7 +42,6 @@ typedef enum {
  *
  */
 typedef struct {
-    bool replica_ack[REPLICA_COUNT];
     uint8_t key_length; // NOT including null byte - just like strlen
     uint32_t value_length;
     uint32_t version_number;

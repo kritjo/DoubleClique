@@ -42,7 +42,7 @@ int put_request_region_poller(void *arg) {
          ADAPTER_NO,
          NO_FLAGS);
 
-    //TODO: Should make one pointer for each of the regions using the offset, put it in a array
+    //TODO: Should make one pointer for each of the regions using the offset, put_into_slot it in a array
     //TODO: Right now only a single client region is checked, make that work before progressing
     put_request_segment_data_read = SCIMapLocalSegment(put_request_segment_read,
                                                   &put_request_map_read,
@@ -92,9 +92,7 @@ int put_request_region_poller(void *arg) {
             ptrdiff_t slot_offset = put_request_segment_data_read->slot_offset_starts[i];
             put_request_slot_preamble_t *slot_read = (put_request_slot_preamble_t *) (put_request_segment_data_read->units + slot_offset);
 
-            if (slot_read->status == FREE) continue;
-
-            if (slot_read->replica_ack[args->replica_number]) continue;
+            if (slot_read->status != PUT) continue;
 
             // No we know that we should actually insert this value into our data-structure.
             char *key = malloc(slot_read->key_length + 1);
@@ -136,12 +134,13 @@ int put_request_region_poller(void *arg) {
                 index_slot->status = 1;
 
                 inserted = true;
-                slot_read->replica_ack[args->replica_number] = 1; //TODO: This is hacky, not really a writeable location
+                slot_read->status = FREE; // This will not actually be written to the client, but only to continue in
+                // the next loop iteration TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right?
                 break;
             }
 
             if (inserted) {
-                printf("New put request with key %s inserted\n", key);
+                printf("New put_into_slot request with key %s inserted\n", key);
             } else {
                 //TODO: see line below
                 fprintf(stderr, "Did not find any available slots for request, should probably handle this somehow\n");
