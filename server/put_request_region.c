@@ -132,7 +132,7 @@ int put_request_region_poller(void *arg) {
 
                 index_slot->offset = offset;
                 index_slot->hash = key_hash;
-                index_slot->version_number = 0xdeadbeef; //TODO: this needs to be computed
+                index_slot->version_number = slot_read->version_number;
                 index_slot->status = 1;
 
                 inserted = true;

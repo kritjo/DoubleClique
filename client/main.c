@@ -11,6 +11,9 @@
 #include "buddy_alloc.h"
 #include "get_node_id.h"
 
+static sci_local_data_interrupt_t ack_data_interrupt;
+void put(volatile put_request_slot_preamble_t *preamble, const char *key, uint8_t key_len, void *value, uint32_t value_len);
+
 int main(int argc, char* argv[]) {
     sci_desc_t sd;
     sci_error_t sci_error;
@@ -27,8 +30,6 @@ int main(int argc, char* argv[]) {
     sci_remote_segment_t data_region_segments[REPLICA_COUNT];
     sci_map_t data_region_map[REPLICA_COUNT];
     volatile void *data_region_start[REPLICA_COUNT];
-
-    sci_local_data_interrupt_t ack_data_interrupt;
 
     if (argc < REPLICA_COUNT + 1) {
         fprintf(stderr, "Usage: %s replica_id[0] ... replica_id[n]\n", argv[0]);
@@ -47,7 +48,6 @@ int main(int argc, char* argv[]) {
          SCI_INFINITE_TIMEOUT,
          SCI_FLAG_BROADCAST);
 
-    printf("sizeof(put_request_region_t): %ld\n", sizeof(put_request_region_t));
     put_request_region = (volatile put_request_region_t*) SCIMapRemoteSegment(put_request_segment,
                                                                               &put_request_map,
                                                                               NO_OFFSET,
@@ -137,11 +137,18 @@ int main(int argc, char* argv[]) {
     void *buddy_metadata = malloc(buddy_sizeof(arena_size));
     struct volatile_buddy *buddy = volatile_buddy_init(buddy_metadata, put_request_region->units, arena_size);
 
-    size_t sample_size = 2048 + sizeof(put_request_slot_preamble_t);
-    volatile void *data = volatile_buddy_malloc(buddy, sample_size);
+    unsigned int node_id = get_node_id();
+    if (node_id > UINT8_MAX) {
+        fprintf(stderr, "node_id too large!\n");
+        exit(EXIT_FAILURE);
+    }
+    put_request_region->sisci_node_id = (uint8_t) node_id;
 
     put_request_region->status = LOCKED;
     put_request_region->slots_used = 1;
+
+    size_t sample_size = 2048 + sizeof(put_request_slot_preamble_t);
+    volatile void *data = volatile_buddy_malloc(buddy, sample_size);
     ptrdiff_t offset = ((volatile uint8_t *) data) - put_request_region->units;
     put_request_region->slot_offset_starts[0] = offset;
 
@@ -152,40 +159,50 @@ int main(int argc, char* argv[]) {
     for (int replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
         sample_preamble->replica_ack[replica_index] = 0;
     }
+    put_request_region->status = WALKABLE;
 
-    const char key[] = "Hei";
-    size_t key_len = strlen(key);
-    sample_preamble->key_length = (uint8_t) key_len;
+    int sample_data[256];
 
-    size_t value_len = sample_size - sizeof(put_request_slot_preamble_t);
-    printf("value_len: %ld\n", value_len);
-    if (value_len > UINT32_MAX) {
-        fprintf(stderr, "Value can at most be of size %ld\n", value_len);
-        exit(EXIT_FAILURE);
+    for (int i = 0; i < 256; i++) {
+        sample_data[i] = i;
     }
 
-    sample_preamble->value_length = (uint32_t) value_len;
+    char key[] = "tall";
+
+    put(sample_preamble, key, 4, sample_data, 256 * sizeof(int));
+
+    put_request_region->status = LOCKED;
+    volatile_buddy_free(buddy, data);
+    put_request_region->slots_used = 0;
+    put_request_region->status = UNUSED;
+
+    free(buddy_metadata);
+
+    SEOE(SCIClose, sd, NO_FLAGS);
+    SCITerminate();
+
+    return EXIT_SUCCESS;
+}
+
+// Put key and value into a slot. Both the key and value will be copied. The preamble must be free when entering.
+void put(volatile put_request_slot_preamble_t *preamble, const char *key, uint8_t key_len, void *value, uint32_t value_len) {
+    printf("Putting with key len %u and value len %u\n", key_len, value_len);
+    preamble->key_length = key_len;
+    preamble->value_length = value_len;
+    preamble->version_number = 0xdeadbeef; //TODO: this needs to be computed
 
     //Copy over the key
     for (size_t i = 0; i < key_len; i++) {
         // Just put in some numbers in increasing order as a sanity check, should be easy to validate
-        *((volatile char *) (put_request_region->units + offset + sizeof(put_request_slot_preamble_t) + (i * sizeof(char)))) = key[i];
+        *(((volatile char *) preamble + sizeof(put_request_slot_preamble_t) + (i * sizeof(char)))) = key[i];
     }
 
-    for (size_t i = 0; i < value_len / sizeof(i); i++) {
-        // Just put in some numbers in increasing order as a sanity check, should be easy to validate
-        *((volatile size_t *) (put_request_region->units + offset + sizeof(put_request_slot_preamble_t) + key_len + (i * sizeof(i)))) = i;
+    // Copy over the value
+    for (uint32_t i = 0; i < value_len; i++) {
+        *(((volatile char *) preamble + sizeof(put_request_slot_preamble_t) + key_len + i)) = ((char *)value)[i];
     }
 
-    sample_preamble->status = PUT;
-
-    unsigned int node_id = get_node_id();
-    if (node_id > UINT8_MAX) {
-        fprintf(stderr, "node_id too large!\n");
-        exit(EXIT_FAILURE);
-    }
-    put_request_region->sisci_node_id = (uint8_t) node_id;
-    put_request_region->status = WALKABLE;
+    preamble->status = PUT;
 
     uint8_t acks_received = 0;
     put_ack_t put_ack;
@@ -202,15 +219,5 @@ int main(int argc, char* argv[]) {
         acks_received++;
     }
 
-    put_request_region->status = LOCKED;
-    volatile_buddy_free(buddy, data);
-    put_request_region->slots_used = 0;
-    put_request_region->status = UNUSED;
-
-    free(buddy_metadata);
-
-    SEOE(SCIClose, sd, NO_FLAGS);
-    SCITerminate();
-
-    return EXIT_SUCCESS;
+    preamble->status = FREE;
 }
