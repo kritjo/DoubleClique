@@ -50,6 +50,8 @@ int main(int argc, char* argv[]) {
     SEOE(SCIInitialize, NO_FLAGS);
     SEOE(SCIOpen, &sd, NO_FLAGS);
 
+    init_bucket_desc();
+
     create_plain_segment_and_set_available(sd, &index_segment, INDEX_REGION_SIZE, replica_index_segment_id[replica_id]);
     printf("Made index segment\n");
     create_plain_segment_and_set_available(sd, &data_segment, DATA_REGION_SIZE, replica_data_segment_id[replica_id]);

@@ -7,8 +7,6 @@
 #include "put_request_region_protocol.h"
 #include "index_data_protocol.h"
 
-#define BUDDY_ALLOC_IMPLEMENTATION
-#include "buddy_alloc.h"
 #include "get_node_id.h"
 
 static sci_local_data_interrupt_t ack_data_interrupt;
@@ -16,8 +14,8 @@ static void *buddy_metadata;
 static struct volatile_buddy *buddy;
 static volatile put_request_region_t *put_request_region;
 
-static uint32_t allocated_slots = 0;
-slot_metadata_t slots[MAX_PUT_REQUEST_SLOTS];
+static uint32_t free_header_slot = 0;
+slot_metadata_t *slots[BUCKET_COUNT];
 
 int main(int argc, char* argv[]) {
     sci_desc_t sd;
@@ -41,6 +39,23 @@ int main(int argc, char* argv[]) {
     SEOE(SCIInitialize, NO_FLAGS);
     SEOE(SCIOpen, &sd, NO_FLAGS);
 
+    init_bucket_desc();
+
+    printf("A\n");
+
+    for (uint32_t exp_index = 0; exp_index < BUCKET_COUNT; exp_index++) {
+        uint32_t exp = MIN_SIZE_ELEMENT_EXP + exp_index;
+        size_t slot_size = POWER_OF_TWO(exp);
+
+        slots[exp_index] = malloc(COMPUTE_SLOT_COUNT(slot_size) * sizeof(slot_metadata_t));
+        if (slots[exp_index] == NULL) {
+            perror("malloc");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    printf("B\n");
+
     SEOE(SCIConnectSegment,
          sd,
          &put_request_segment,
@@ -55,15 +70,19 @@ int main(int argc, char* argv[]) {
     put_request_region = (volatile put_request_region_t*) SCIMapRemoteSegment(put_request_segment,
                                                                               &put_request_map,
                                                                               NO_OFFSET,
-                                                                              sizeof(put_request_region_t),
+                                                                              put_region_size(),
                                                                               NO_SUGGESTED_ADDRESS,
                                                                               NO_FLAGS,
                                                                               &sci_error);
+
+    printf("pointer man: %p\n", (volatile void *) put_request_region);
 
     if (sci_error != SCI_ERR_OK) {
         fprintf(stderr, "SCIMapLocalSegment failed: %s\n", SCIGetErrorString(sci_error));
         exit(EXIT_FAILURE);
     }
+
+    printf("C\n");
 
     for (int replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
         const char *replica_str_node_id = argv[1 + replica_index];
@@ -125,6 +144,8 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    printf("D\n");
+
     uint ack_interrupt_no = ACK_DATA_INTERRUPT_NO;
     SEOE(SCICreateDataInterrupt,
          sd,
@@ -135,18 +156,49 @@ int main(int argc, char* argv[]) {
          NO_ARG,
          SCI_FLAG_USE_CALLBACK | SCI_FLAG_FIXED_INTNO);
 
-    // Just to test we can try to allocate a single put_into_slot region
-
-    size_t arena_size = PUT_REQUEST_REGION_SIZE;
-    buddy_metadata = malloc(buddy_sizeof(arena_size));
-    buddy = volatile_buddy_init(buddy_metadata, put_request_region->units, arena_size);
-
     unsigned int node_id = get_node_id();
     if (node_id > UINT8_MAX) {
         fprintf(stderr, "node_id too large!\n");
         exit(EXIT_FAILURE);
     }
     put_request_region->sisci_node_id = (uint8_t) node_id;
+
+    printf("E %d\n", MAX_PUT_REQUEST_SLOTS);
+
+    for (uint32_t i = 0; i < MAX_PUT_REQUEST_SLOTS; i++) {
+        put_request_region->header_slots[i] = 0;
+    }
+
+    printf("F\n");
+
+    put_request_region->status = ACTIVE;
+
+    printf("pointer man again: %p\n", (volatile void *) put_request_region);
+
+    printf("1\n");
+    for (uint32_t exp_index = 0; exp_index < BUCKET_COUNT; exp_index++) {
+        printf("11\n");
+
+        uint32_t exp = MIN_SIZE_ELEMENT_EXP + exp_index;
+        size_t slot_size = POWER_OF_TWO(exp);
+        printf("12\n");
+
+        size_t slot_count = COMPUTE_SLOT_COUNT(slot_size);
+        printf("13 %ld\n", put_region_bucket_desc[exp_index].offset);
+        volatile char *start_of_bucket = ((volatile char *) put_request_region) + sizeof(put_request_region_t) + put_region_bucket_desc[exp_index].offset;
+        printf("12 again\n");
+
+        for (uint32_t slot_index = 0; slot_index < slot_count; slot_index++) {
+            //TODO: maybe we should mark the actual slots as free aswell in case not zeroed
+            slots[exp_index][slot_index].ack_count = 0;
+            slots[exp_index][slot_index].status = FREE;
+            slots[exp_index][slot_index].total_payload_size = (uint32_t) slot_size;
+            slots[exp_index][slot_index].slot_preamble = (volatile put_request_slot_preamble_t *) start_of_bucket + slot_index * (slot_size + sizeof(put_request_slot_preamble_t));
+            slots[exp_index][slot_index].offset = (ptrdiff_t) (put_region_bucket_desc[exp_index].offset +
+                                              slot_index * (slot_size + sizeof(put_request_slot_preamble_t)));
+        }
+    }
+    printf("2\n");
 
     int sample_data[256];
 
@@ -155,9 +207,17 @@ int main(int argc, char* argv[]) {
     }
 
     char key[] = "tall";
-    uint32_t slot_no = allocate_new_slot(4, 256*sizeof(int));
 
-    put_into_slot(slot_no, key, 4, sample_data, 256 * sizeof(int));
+    printf("2a\n");
+
+    slot_metadata_t *slot = find_available_slot(256 * sizeof(int) + 4);
+
+    printf("3\n");
+
+    put_into_slot(slot, key, 4, sample_data, 256 * sizeof(int));
+
+    printf("4\n");
+
 
     // TODO: How to free the slots in buddy and in general
     while(1);
@@ -171,60 +231,68 @@ int main(int argc, char* argv[]) {
 }
 
 // Put key and value into a slot. Both the key and value will be copied. The preamble must be free when entering.
-void put_into_slot(uint32_t slot_no, const char *key, uint8_t key_len, void *value, uint32_t value_len) {
-    slot_metadata_t slot = slots[slot_no];
-    if (slot.status != FREE) {
+void put_into_slot(slot_metadata_t *slot, const char *key, uint8_t key_len, void *value, uint32_t value_len) {
+    printf("Putting tplsize: %u\n", slot->total_payload_size);
+    if (slot->status != FREE) {
         fprintf(stderr, "Slot got to be free to put new value into it!\n");
         exit(EXIT_FAILURE);
     }
 
-    if (slot.total_payload_size < key_len + value_len) {
+    if (slot->total_payload_size < key_len + value_len) {
         fprintf(stderr, "Tried to put too large payload into slot!\n");
         exit(EXIT_FAILURE);
     }
 
-    slot.slot_preamble->key_length = key_len;
-    slot.slot_preamble->value_length = value_len;
-    slot.slot_preamble->version_number = 0xdeadbeef; //TODO: this needs to be computed
+    slot->slot_preamble->key_length = key_len;
+    slot->slot_preamble->value_length = value_len;
+    slot->slot_preamble->version_number = 0xdeadbeef; //TODO: this needs to be computed
 
     //Copy over the key
     for (size_t i = 0; i < key_len; i++) {
         // Just put_into_slot in some numbers in increasing order as a sanity check, should be easy to validate
-        *(((volatile char *) slot.slot_preamble + sizeof(put_request_slot_preamble_t) + (i * sizeof(char)))) = key[i];
+        *(((volatile char *) slot->slot_preamble + sizeof(put_request_slot_preamble_t) + (i * sizeof(char)))) = key[i];
     }
 
     // Copy over the value
     for (uint32_t i = 0; i < value_len; i++) {
-        *(((volatile char *) slot.slot_preamble + sizeof(put_request_slot_preamble_t) + key_len + i)) = ((char *)value)[i];
+        *(((volatile char *) slot->slot_preamble + sizeof(put_request_slot_preamble_t) + key_len + i)) = ((char *)value)[i];
     }
 
-    slot.slot_preamble->status = PUT;
-    slot.status = PUT;
+    slot->slot_preamble->status = PUT;
+    slot->status = PUT;
+
+    put_request_region->header_slots[free_header_slot] = (size_t) slot->offset;
+    free_header_slot = (free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 }
 
-uint32_t allocate_new_slot(size_t key_size, size_t value_size) {
-    uint32_t slot_no = allocated_slots++;
+slot_metadata_t *find_available_slot(size_t slot_payload_size) {
+    if (slot_payload_size > UINT32_MAX) {
+        fprintf(stderr, "Too big slot_payload_size\n");
+        exit(EXIT_FAILURE);
+    }
+    printf("x3\n");
 
-    put_request_region->status = LOCKED;
-    size_t slot_size = key_size + value_size + sizeof(put_request_slot_preamble_t);
-    volatile void *slot = volatile_buddy_malloc(buddy, slot_size);
-    ptrdiff_t offset = ((volatile uint8_t *) slot) - put_request_region->units;
-    put_request_region->slot_offset_starts[slot_no] = offset;
 
-    // Load with some sample slot, starting with the preamble -- TODO: we should only broadcast using memcpy with a single transaction
-    volatile put_request_slot_preamble_t *slot_preamble = (volatile put_request_slot_preamble_t *) slot;
-    slot_preamble->status = FREE;
+    int exp = min_twos_complement_bits((uint32_t) slot_payload_size);
+    printf("exp: %d\n", exp);
+    uint32_t exp_index = (uint32_t) (exp - MIN_SIZE_ELEMENT_EXP);
+    size_t slot_size = POWER_OF_TWO(exp);
+    printf("x4: %d, slot_payload_size: %ld\n", exp_index, slot_payload_size);
 
-    put_request_region->slots_used = allocated_slots;
-    put_request_region->status = WALKABLE;
+    for (uint32_t i = 0; i < COMPUTE_SLOT_COUNT(slot_size); i++) {
+        printf("i: %d\n", i);
+        slot_metadata_t *slot = &(slots[exp_index][i]);
+        //printf("slots[%d][%d] %p || WEEE: %d\n", exp_index, i, (void *) slot, slots[exp_index][i].total_payload_size);
+        if (slot->status == FREE) {
+            printf("found free slot at exp_index: %d and slot index: %d that has total payload size: %u\n", exp_index, i, slots[exp_index][i].total_payload_size);
+            return slot;
+        }
+        printf("geth\n");
+    }
+    printf("x5\n");
 
-    slot_metadata_t *slot_metadata = &slots[slot_no];
-    slot_metadata->slot_preamble = slot_preamble;
-    slot_metadata->total_payload_size = key_size + value_size;
-    slot_metadata->status = FREE;
-    slot_metadata->ack_count = 0;
 
-    return slot_no;
+    return NULL;
 }
 
 // Put ack callback
@@ -240,7 +308,7 @@ sci_callback_action_t put_ack(void *arg, sci_local_data_interrupt_t interrupt, v
     }
 
     put_ack_t *put_ack_data = (put_ack_t *) data;
-    slot_metadata_t *slot_metadata = &slots[put_ack_data->slot_no];
+    slot_metadata_t *slot_metadata = &slots[put_ack_data->bucket_no][put_ack_data->slot_no];
     uint8_t ack_count = ++slot_metadata->ack_count;
 
     if (ack_count < REPLICA_COUNT)
