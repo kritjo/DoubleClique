@@ -13,6 +13,7 @@ slot_metadata_t *put_into_available_slot(slot_metadata_t **slots, const char *ke
 }
 
 void init_slots(slot_metadata_t **slots, volatile put_request_region_t *put_request_region) {
+    // First allocate space for the metadata slots
     for (uint32_t exp_index = 0; exp_index < BUCKET_COUNT; exp_index++) {
         uint32_t exp = MIN_SIZE_ELEMENT_EXP + exp_index;
         size_t slot_size = POWER_OF_TWO(exp);
@@ -24,6 +25,7 @@ void init_slots(slot_metadata_t **slots, volatile put_request_region_t *put_requ
         }
     }
 
+    // Then populate them with initial correct values
     for (uint32_t exp_index = 0; exp_index < BUCKET_COUNT; exp_index++) {
         uint32_t exp = MIN_SIZE_ELEMENT_EXP + exp_index;
         size_t slot_size = POWER_OF_TWO(exp);
@@ -42,6 +44,7 @@ void init_slots(slot_metadata_t **slots, volatile put_request_region_t *put_requ
     }
 }
 
+// Find an available metadata slot for a given payload size
 static slot_metadata_t *find_available_slot(slot_metadata_t **slots, size_t slot_payload_size) {
     if (slot_payload_size > UINT32_MAX) {
         fprintf(stderr, "Too big slot_payload_size\n");

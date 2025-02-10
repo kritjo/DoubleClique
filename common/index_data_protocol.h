@@ -32,7 +32,7 @@ typedef struct {
 
 index_entry_t *existing_slot_for_key(void *index_region, void *data_region, uint32_t key_hash, uint32_t key_length, char *key);
 index_entry_t *find_available_index_slot(void *index_region, uint32_t key_hash);
-data_entry_preamble_t *find_data_slot_for_index_slot(void *data_region, index_entry_t *index_slot, bool update, uint32_t payload_length, void *(*custom_malloc)(size_t));
+data_entry_preamble_t *find_data_slot_for_index_slot(void *data_region, index_entry_t *index_slot, bool try_to_use_existing_data_slot, uint32_t payload_length, void *(*malloc_like)(size_t));
 void insert_in_table(void *data_region, index_entry_t *index_slot, data_entry_preamble_t *data_slot, char *key, uint32_t key_length, uint32_t key_hash, void *data, uint32_t data_length, uint32_t version_number);
 
 #endif //DOUBLECLIQUE_INDEX_DATA_PROTOCOL_H

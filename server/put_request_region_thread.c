@@ -50,6 +50,7 @@ int put_request_region_poller(void *arg) {
             continue;
         }
 
+        // If this is the first time we are entering the loop, connect to the client
         if (!connected_to_client) {
             connect_to_put_ack_data_interrupt(args->sd, &ack_data_interrupt, put_request_segment->sisci_node_id);
             connected_to_client = true;
@@ -58,25 +59,34 @@ int put_request_region_poller(void *arg) {
         // Wait for new transfer
         put_request_slot_preamble_t *slot_read = wait_for_new_put();
 
+        // TODO: We dont really need this, its just nice to have the key for debugging purposes, we could just have a pointer into the slot
         char *key = strndup(((char *) slot_read) + sizeof(put_request_slot_preamble_t), slot_read->key_length);
-        uint32_t key_hash = super_fast_hash((void *) key, slot_read->key_length);
 
+        uint32_t key_hash = super_fast_hash((void *) key, slot_read->key_length);
         void *data = (void *) ((char *) slot_read + sizeof(put_request_slot_preamble_t) + slot_read->key_length);
 
-        bool update = true;
+        bool update;
         index_entry_t *index_slot = existing_slot_for_key(args->index_region, args->data_region, key_hash, slot_read->key_length, key);
+
+        // If we did not find an existing slot, we are not updating, but fresh inserting
         if (index_slot == NULL) {
             update = false;
+
+            // Try to find an available slot
             index_slot = find_available_index_slot(args->index_region, key_hash);
-        }
-        if (index_slot == NULL) {
-            //TODO: see line below
-            fprintf(stderr, "Did not find any available slots for request, should probably handle this somehow\n");
 
-            put_request_segment->header_slots[current_head_slot] = 0; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
-            current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
+            // If we do not find one, there is no space left
+            if (index_slot == NULL) {
+                //TODO: see line below
+                fprintf(stderr, "Did not find any available slots for request, should probably handle this somehow\n");
 
-            continue;
+                put_request_segment->header_slots[current_head_slot] = 0; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+                current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
+
+                continue;
+            }
+        } else {
+            update = true;
         }
 
         data_entry_preamble_t *data_slot = find_data_slot_for_index_slot(args->data_region,
