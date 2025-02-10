@@ -10,8 +10,6 @@
 #include "get_node_id.h"
 
 static sci_local_data_interrupt_t ack_data_interrupt;
-static void *buddy_metadata;
-static struct volatile_buddy *buddy;
 static volatile put_request_region_t *put_request_region;
 
 static uint32_t free_header_slot = 0;
@@ -190,12 +188,12 @@ int main(int argc, char* argv[]) {
 
         for (uint32_t slot_index = 0; slot_index < slot_count; slot_index++) {
             //TODO: maybe we should mark the actual slots as free aswell in case not zeroed
+            size_t offset = slot_index * (slot_size + sizeof(put_request_slot_preamble_t));
             slots[exp_index][slot_index].ack_count = 0;
             slots[exp_index][slot_index].status = FREE;
             slots[exp_index][slot_index].total_payload_size = (uint32_t) slot_size;
-            slots[exp_index][slot_index].slot_preamble = (volatile put_request_slot_preamble_t *) start_of_bucket + slot_index * (slot_size + sizeof(put_request_slot_preamble_t));
-            slots[exp_index][slot_index].offset = (ptrdiff_t) (put_region_bucket_desc[exp_index].offset +
-                                              slot_index * (slot_size + sizeof(put_request_slot_preamble_t)));
+            slots[exp_index][slot_index].slot_preamble = (volatile put_request_slot_preamble_t *) (start_of_bucket + offset);
+            slots[exp_index][slot_index].offset = (ptrdiff_t) (put_region_bucket_desc[exp_index].offset + offset);
         }
     }
     printf("2\n");
@@ -217,8 +215,6 @@ int main(int argc, char* argv[]) {
 
     // TODO: How to free the slots in buddy and in general
     while(1);
-
-    free(buddy_metadata);
 
     SEOE(SCIClose, sd, NO_FLAGS);
     SCITerminate();
@@ -321,22 +317,6 @@ sci_callback_action_t put_ack(void *arg, sci_local_data_interrupt_t interrupt, v
 
     slot_metadata->ack_count = 0;
     slot_metadata->status = FREE;
-
-    sleep(1);
-
-    unsigned char sample_data[128];
-
-    for (unsigned char i = 0; i < 128; i++) {
-        sample_data[i] = i;
-    }
-
-    char key[] = "tall";
-
-    printf("2a\n");
-
-    put(key, 4, sample_data, 128 * sizeof(char));
-
-    printf("4\n");
 
     return SCI_CALLBACK_CONTINUE;
 }
