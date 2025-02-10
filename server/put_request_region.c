@@ -52,8 +52,6 @@ int put_request_region_poller(void *arg) {
                                                   NO_FLAGS,
                                                   &sci_error);
 
-    printf("put_request_segment_data_read: %p -> %p\n", (void *) put_request_segment_data_read, (void *) ((char *) put_request_segment_data_read + put_region_size()));
-
     if (sci_error != SCI_ERR_OK) {
         fprintf(stderr, "SCIMapLocalSegment failed: %s\n", SCIGetErrorString(sci_error));
         exit(EXIT_FAILURE);
@@ -77,7 +75,6 @@ int put_request_region_poller(void *arg) {
         }
 
         if (!inited) {
-            printf("Connecting to node id %u\n", put_request_segment_data_read->sisci_node_id);
             SEOE(SCIConnectDataInterrupt,
                  args->sd,
                  &ack_data_interrupt,
@@ -95,19 +92,9 @@ int put_request_region_poller(void *arg) {
         size_t slot_offset = put_request_segment_data_read->header_slots[current_head_slot];
         current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 
-        printf("a: %zu\n", slot_offset);
-
-        printf("put_request_segment_data_read: %p\n", (void *) put_request_segment_data_read);
-        printf("put_request_region_t: %zu\n", sizeof(put_request_region_t));
-        printf("slot_offset: %zu\n", slot_offset);
-
         put_request_slot_preamble_t *slot_read = (put_request_slot_preamble_t *) ((char *) put_request_segment_data_read + sizeof(put_request_region_t) + slot_offset);
 
-        printf("b: %p\n", (void *) &slot_read->status); //TODO: Problem this seems to read outside of put_into_available_slot region :/
-
         if (slot_read->status != PUT) continue;
-
-        printf("cccc\n");
 
         // No we know that we should actually insert this value into our data-structure.
         char *key = malloc(slot_read->key_length + 1);
@@ -116,28 +103,16 @@ int put_request_region_poller(void *arg) {
             exit(EXIT_FAILURE);
         }
 
-        printf("c\n");
-
         for (uint8_t char_i = 0; char_i < slot_read->key_length; char_i++) {
             key[char_i] = *((char *) slot_read + sizeof(put_request_slot_preamble_t) + char_i);
         }
         key[slot_read->key_length] = '\0';
-
-        printf("d\n");
 
         void *data = (void *) ((char *) slot_read + sizeof(put_request_slot_preamble_t) + slot_read->key_length);
 
         uint32_t key_hash = super_fast_hash((void *) key, slot_read->key_length);
         bool inserted = false;
 
-//        for (uint32_t b = 0; b < slot_read->value_length + slot_read->key_length + sizeof(put_request_slot_preamble_t); b++) {
-//            printf("value[%d] = %u\n", b, ((unsigned char *) data)[b]);
-//        }
-
-        printf("slot_read pointer: %p\n", (void *) slot_read);
-        printf("data pointer: %p\n", (void *) data);
-
-        printf("e\n");
         for (uint8_t slot = 0; slot < INDEX_SLOTS_PR_BUCKET; slot++) {
             index_entry_t *index_slot = (index_entry_t *) GET_SLOT_POINTER((char *) args->index_region, key_hash % INDEX_BUCKETS, slot);
             void *allocated_data_table;
@@ -151,13 +126,7 @@ int put_request_region_poller(void *arg) {
 
                 data_entry_preamble_t *existing_data_slot = (data_entry_preamble_t *) ((char *) args->data_region + index_slot->offset);
 
-                printf("Checking for continues offset: %zu\n", index_slot->offset);
-                printf("existing_data_slot->key_length: %d\n", existing_data_slot->key_length);
-                printf("slot_read->key_length: %d\n", slot_read->key_length);
-
                 if (existing_data_slot->key_length != slot_read->key_length) continue;
-
-                printf("XX1 Checking for continues\n");
 
                 char *existing_key = (char *) existing_data_slot + sizeof(data_entry_preamble_t);
 
@@ -189,7 +158,6 @@ int put_request_region_poller(void *arg) {
             memcpy(data_location_in_table, data, slot_read->value_length);
 
             index_slot->offset = offset;
-            printf("Inserting to index slot with offset %zu\n", offset);
             index_slot->hash = key_hash;
             index_slot->version_number = slot_read->version_number;
             index_slot->status = 1;
@@ -199,8 +167,6 @@ int put_request_region_poller(void *arg) {
             // the next loop iteration TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right?
             break;
         }
-
-        printf("f\n");
 
         if (inserted) {
             printf("New put_into_slot request with key %s inserted\n", key);

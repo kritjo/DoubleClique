@@ -8,7 +8,6 @@ size_t put_region_size(void) {
     if (size != 0) return size;
 
     size = put_region_buckets_size();
-    printf("size: %zu\n", size);
     return size + sizeof(put_request_region_t);
 }
 
@@ -46,7 +45,6 @@ void init_bucket_desc(void) {
         put_region_bucket_desc[i].slot_size = slot_size;
         put_region_bucket_desc[i].count = COMPUTE_SLOT_COUNT(slot_size);
         put_region_bucket_desc[i].offset = offset;
-        printf("Bucket offset %d: %zu and count: %zu\n", i, offset, COMPUTE_SLOT_COUNT(slot_size));
         offset += BUCKET_SIZE(slot_size);
     }
 }
