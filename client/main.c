@@ -7,7 +7,6 @@
 #include "put_request_region_protocol.h"
 #include "index_data_protocol.h"
 
-#include "get_node_id.h"
 #include "slots.h"
 #include "put.h"
 
@@ -16,9 +15,10 @@ static sci_desc_t sd;
 static volatile put_request_region_t *put_request_region;
 
 static uint32_t free_header_slot = 0;
-slot_metadata_t *slots[BUCKET_COUNT];
+static slot_metadata_t *slots[BUCKET_COUNT];
 
 static void init_replica_data_index_region(uint8_t replica_index, uint8_t replica_node_id);
+static void put(const char *key, uint8_t key_len, void *value, uint32_t value_len);
 
 int main(int argc, char* argv[]) {
     if (argc < REPLICA_COUNT + 1) {
@@ -44,7 +44,6 @@ int main(int argc, char* argv[]) {
     }
 
     init_put_ack_data_interrupt(sd, slots);
-
     put_request_region->status = ACTIVE;
 
     unsigned char sample_data[128];
@@ -55,9 +54,7 @@ int main(int argc, char* argv[]) {
 
     char key[] = "tall";
 
-    slot_metadata_t *slot = put(slots, key, 4, sample_data, 128 * sizeof(char));
-    put_request_region->header_slots[free_header_slot] = (size_t) slot->offset;
-    free_header_slot = (free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
+    put(key, 4, sample_data, sizeof(sample_data));
 
     // TODO: How to free the slots in buddy and in general
     while(1);
@@ -126,4 +123,10 @@ static void init_replica_data_index_region(uint8_t replica_index, uint8_t replic
         fprintf(stderr, "SCIMapLocalSegment failed: %s\n", SCIGetErrorString(sci_error));
         exit(EXIT_FAILURE);
     }
+}
+
+static void put(const char *key, uint8_t key_len, void *value, uint32_t value_len) {
+    slot_metadata_t *slot = put_into_available_slot(slots, key, key_len, value, value_len);
+    put_request_region->header_slots[free_header_slot] = (size_t) slot->offset;
+    free_header_slot = (free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 }

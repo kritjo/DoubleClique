@@ -4,7 +4,7 @@
 #include "put.h"
 #include "get_node_id.h"
 
-slot_metadata_t *put(slot_metadata_t **slots, const char *key, uint8_t key_len, void *value, uint32_t value_len) {
+slot_metadata_t *put_into_available_slot(slot_metadata_t **slots, const char *key, uint8_t key_len, void *value, uint32_t value_len) {
     slot_metadata_t *slot = find_available_slot(slots, key_len + value_len);
     put_into_slot(slot, key, key_len, value, value_len);
     return slot;
@@ -91,7 +91,7 @@ static sci_callback_action_t put_ack(void *arg, sci_local_data_interrupt_t inter
         exit(EXIT_FAILURE);
     }
     // Got same amount of acks as there are replicas, we must make the slot available again
-    // We do not need this, as the replicas actually put this for us: slot_metadata->slot_preamble->status = FREE;
+    // We do not need this, as the replicas actually put_into_available_slot this for us: slot_metadata->slot_preamble->status = FREE;
 
     slot_metadata->ack_count = 0;
     slot_metadata->status = FREE;
@@ -126,12 +126,12 @@ static void put_into_slot(slot_metadata_t *slot,
                           void *value,
                           uint32_t value_len) {
     if (slot->status != FREE) {
-        fprintf(stderr, "Slot got to be free to put new value into it!\n");
+        fprintf(stderr, "Slot got to be free to put_into_available_slot new value into it!\n");
         exit(EXIT_FAILURE);
     }
 
     if (slot->total_payload_size < key_len + value_len) {
-        fprintf(stderr, "Tried to put too large payload into slot!\n");
+        fprintf(stderr, "Tried to put_into_available_slot too large payload into slot!\n");
         exit(EXIT_FAILURE);
     }
 

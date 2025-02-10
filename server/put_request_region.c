@@ -103,7 +103,7 @@ int put_request_region_poller(void *arg) {
 
         put_request_slot_preamble_t *slot_read = (put_request_slot_preamble_t *) ((char *) put_request_segment_data_read + sizeof(put_request_region_t) + slot_offset);
 
-        printf("b: %p\n", (void *) &slot_read->status); //TODO: Problem this seems to read outside of put region :/
+        printf("b: %p\n", (void *) &slot_read->status); //TODO: Problem this seems to read outside of put_into_available_slot region :/
 
         if (slot_read->status != PUT) continue;
 
