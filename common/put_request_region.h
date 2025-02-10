@@ -1,9 +1,10 @@
-#ifndef DOUBLECLIQUE_PUT_REQUEST_REGION_PROTOCOL_H
-#define DOUBLECLIQUE_PUT_REQUEST_REGION_PROTOCOL_H
+#ifndef DOUBLECLIQUE_PUT_REQUEST_REGION_H
+#define DOUBLECLIQUE_PUT_REQUEST_REGION_H
 
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <sisci_types.h>
 #include "sisci_glob_defs.h"
 
 typedef enum {
@@ -23,11 +24,6 @@ typedef struct {
     uint32_t slot_no;
 } put_ack_t;
 
-typedef enum {
-    FREE,
-    PUT,
-} put_request_slot_status_t;
-
 /*
  * The structure of the request slot is as follows:
  * put_request_slot_preamble_t
@@ -37,7 +33,6 @@ typedef struct {
     uint8_t key_length; // NOT including null byte - just like strlen
     uint32_t value_length;
     uint32_t version_number;
-    put_request_slot_status_t status;
 } put_request_slot_preamble_t;
 
 typedef struct {
@@ -68,5 +63,7 @@ void init_bucket_desc(void);
 size_t get_slot_no_from_offset(size_t offset, uint32_t bucket_no);
 uint32_t get_bucket_no_from_offset(size_t offset);
 size_t put_region_size(void);
+void connect_to_put_ack_data_interrupt(sci_desc_t sd, sci_remote_data_interrupt_t *ack_data_interrupt, uint32_t remote_id);
+void send_ack(uint8_t replica_no, sci_remote_data_interrupt_t ack_data_interrupt, size_t offset_to_ack);
 
-#endif //DOUBLECLIQUE_PUT_REQUEST_REGION_PROTOCOL_H
+#endif //DOUBLECLIQUE_PUT_REQUEST_REGION_H

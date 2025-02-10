@@ -4,7 +4,7 @@
 #include <sisci_api.h>
 
 #include "sisci_glob_defs.h"
-#include "put_request_region_protocol.h"
+#include "put_request_region.h"
 #include "index_data_protocol.h"
 
 #include "slots.h"
@@ -28,7 +28,7 @@ int main(int argc, char* argv[]) {
     SEOE(SCIOpen, &sd, NO_FLAGS);
 
     init_bucket_desc();
-    init_put_request_region(sd, &put_request_region);
+    connect_to_put_request_region(sd, &put_request_region);
     init_slots(slots, put_request_region);
 
     for (uint8_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
@@ -43,7 +43,7 @@ int main(int argc, char* argv[]) {
         init_replica_data_index_region(replica_index, (uint8_t) num);
     }
 
-    init_put_ack_data_interrupt(sd, slots);
+    create_put_ack_data_interrupt(sd, slots);
     put_request_region->status = ACTIVE;
 
     unsigned char sample_data[128];

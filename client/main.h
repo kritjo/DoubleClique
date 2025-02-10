@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <sisci_types.h>
-#include "put_request_region_protocol.h"
+#include "put_request_region.h"
 
 int main(int argc, char* argv[]);
 

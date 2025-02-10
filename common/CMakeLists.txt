@@ -5,13 +5,14 @@ add_library(commonLib STATIC
         buddy_alloc.h
         linked_list.c
         linked_list.h
-        put_request_region_protocol.c
-        put_request_region_protocol.h
+        put_request_region.c
+        put_request_region.h
         index_data_protocol.h
         get_node_id.c
         get_node_id.h
         power_of_two.h
         power_of_two.c
+        index_data_protocol.c
 )
 
 target_include_directories(commonLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

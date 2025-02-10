@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <sisci_api.h>
 #include "sisci_glob_defs.h"
-#include "put_request_region.h"
+#include "put_request_region_thread.h"
 #include "index_data_protocol.h"
 
 void create_plain_segment_and_set_available(sci_desc_t sd, sci_local_segment_t *segment, size_t size, int segment_id) {
