@@ -13,24 +13,28 @@
 
 #define BUDDY_ALLOC_IMPLEMENTATION
 #include "buddy_alloc.h"
+#include "put_request_region_utils.h"
 
-static put_request_region_t *put_request_segment_data_read;
+static put_request_region_t *put_request_segment;
 static uint32_t current_head_slot = 0;
 static struct buddy *buddy = NULL;
 
 static inline put_request_slot_preamble_t *wait_for_new_put(void) {
-    while (put_request_segment_data_read->header_slots[current_head_slot] == 0);
+    while (put_request_segment->header_slots[current_head_slot] == 0);
 
-    size_t slot_offset = put_request_segment_data_read->header_slots[current_head_slot];
-    return (put_request_slot_preamble_t *) ((char *) put_request_segment_data_read + sizeof(put_request_region_t) + slot_offset);
+    size_t slot_offset = put_request_segment->header_slots[current_head_slot];
+    return (put_request_slot_preamble_t *) ((char *) put_request_segment + sizeof(put_request_region_t) + slot_offset);
+}
+
+static inline void *buddy_wrapper(size_t size) {
+    return buddy_malloc(buddy, size);
 }
 
 int put_request_region_poller(void *arg) {
     put_request_region_poller_thread_args_t *args = (put_request_region_poller_thread_args_t *) arg;
 
-    init_put_request_region(args->sd);
-
-    put_request_segment_data_read->status = INACTIVE;
+    init_put_request_region(args->sd, &put_request_segment);
+    put_request_segment->status = INACTIVE;
 
     // Set up buddy allocator
     void *buddy_metadata = malloc(buddy_sizeof(DATA_REGION_SIZE));
@@ -41,13 +45,13 @@ int put_request_region_poller(void *arg) {
 
     //Enter main loop
     while (1) {
-        if (put_request_segment_data_read->status == INACTIVE) {
+        if (put_request_segment->status == INACTIVE) {
             thrd_yield();
             continue;
         }
 
         if (!connected_to_client) {
-            connect_to_put_ack_data_interrupt(args->sd, &ack_data_interrupt, put_request_segment_data_read->sisci_node_id);
+            connect_to_put_ack_data_interrupt(args->sd, &ack_data_interrupt, put_request_segment->sisci_node_id);
             connected_to_client = true;
         }
 
@@ -67,7 +71,7 @@ int put_request_region_poller(void *arg) {
             //TODO: see line below
             fprintf(stderr, "Did not find any available slots for request, should probably handle this somehow\n");
 
-            put_request_segment_data_read->header_slots[current_head_slot] = 0; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+            put_request_segment->header_slots[current_head_slot] = 0; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
             current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 
             continue;
@@ -91,57 +95,13 @@ int put_request_region_poller(void *arg) {
 
 
         printf("New put_into_slot request with key %s inserted\n", key);
-        send_ack(args->replica_number, ack_data_interrupt, put_request_segment_data_read->header_slots[current_head_slot]);
+        send_ack(args->replica_number, ack_data_interrupt, put_request_segment->header_slots[current_head_slot]);
 
-        put_request_segment_data_read->header_slots[current_head_slot] = 0; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+        put_request_segment->header_slots[current_head_slot] = 0; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
         current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 
         free(key);
     }
 
     return 0;
-}
-
-static void *buddy_wrapper(size_t size) {
-    return buddy_malloc(buddy, size);
-}
-
-void init_put_request_region(sci_desc_t sd) {
-    sci_error_t sci_error;
-
-    sci_local_segment_t put_request_segment_read;
-    sci_map_t put_request_map_read;
-
-    // Set up request region
-    SEOE(SCICreateSegment,
-         sd,
-         &put_request_segment_read,
-         PUT_REQUEST_SEGMENT_ID,
-         put_region_size(),
-         NO_CALLBACK,
-         NO_ARG,
-         SCI_FLAG_BROADCAST);
-
-    SEOE(SCIPrepareSegment,
-         put_request_segment_read,
-         ADAPTER_NO,
-         NO_FLAGS);
-
-    SEOE(SCISetSegmentAvailable,
-         put_request_segment_read,
-         ADAPTER_NO,
-         NO_FLAGS);
-
-    put_request_segment_data_read = SCIMapLocalSegment(put_request_segment_read,
-                                                       &put_request_map_read,
-                                                       NO_OFFSET,
-                                                       put_region_size(),
-                                                       NO_SUGGESTED_ADDRESS,
-                                                       NO_FLAGS,
-                                                       &sci_error);
-
-    if (sci_error != SCI_ERR_OK) {
-        fprintf(stderr, "SCIMapLocalSegment failed: %s\n", SCIGetErrorString(sci_error));
-        exit(EXIT_FAILURE);
-    }
 }
