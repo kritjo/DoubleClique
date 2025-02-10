@@ -39,8 +39,6 @@ int main(int argc, char* argv[]) {
 
     init_bucket_desc();
 
-    printf("A\n");
-
     for (uint32_t exp_index = 0; exp_index < BUCKET_COUNT; exp_index++) {
         uint32_t exp = MIN_SIZE_ELEMENT_EXP + exp_index;
         size_t slot_size = POWER_OF_TWO(exp);
@@ -52,7 +50,6 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    printf("B\n");
 
     SEOE(SCIConnectSegment,
          sd,
@@ -73,14 +70,10 @@ int main(int argc, char* argv[]) {
                                                                               NO_FLAGS,
                                                                               &sci_error);
 
-    printf("pointer man: %p\n", (volatile void *) put_request_region);
-
     if (sci_error != SCI_ERR_OK) {
         fprintf(stderr, "SCIMapLocalSegment failed: %s\n", SCIGetErrorString(sci_error));
         exit(EXIT_FAILURE);
     }
-
-    printf("C\n");
 
     for (int replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
         const char *replica_str_node_id = argv[1 + replica_index];
@@ -142,8 +135,6 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    printf("D\n");
-
     uint ack_interrupt_no = ACK_DATA_INTERRUPT_NO;
     SEOE(SCICreateDataInterrupt,
          sd,
@@ -161,30 +152,19 @@ int main(int argc, char* argv[]) {
     }
     put_request_region->sisci_node_id = (uint8_t) node_id;
 
-    printf("E %d\n", MAX_PUT_REQUEST_SLOTS);
-
     for (uint32_t i = 0; i < MAX_PUT_REQUEST_SLOTS; i++) {
         put_request_region->header_slots[i] = 0;
     }
 
-    printf("F\n");
-
     put_request_region->status = ACTIVE;
 
-    printf("pointer man again: %p\n", (volatile void *) put_request_region);
-
-    printf("1\n");
     for (uint32_t exp_index = 0; exp_index < BUCKET_COUNT; exp_index++) {
-        printf("11\n");
 
         uint32_t exp = MIN_SIZE_ELEMENT_EXP + exp_index;
         size_t slot_size = POWER_OF_TWO(exp);
-        printf("12\n");
 
         size_t slot_count = COMPUTE_SLOT_COUNT(slot_size);
-        printf("13 %ld\n", put_region_bucket_desc[exp_index].offset);
         volatile char *start_of_bucket = ((volatile char *) put_request_region) + sizeof(put_request_region_t) + put_region_bucket_desc[exp_index].offset;
-        printf("12 again\n");
 
         for (uint32_t slot_index = 0; slot_index < slot_count; slot_index++) {
             //TODO: maybe we should mark the actual slots as free aswell in case not zeroed
@@ -196,7 +176,6 @@ int main(int argc, char* argv[]) {
             slots[exp_index][slot_index].offset = (ptrdiff_t) (put_region_bucket_desc[exp_index].offset + offset);
         }
     }
-    printf("2\n");
 
     unsigned char sample_data[128];
 
@@ -206,12 +185,7 @@ int main(int argc, char* argv[]) {
 
     char key[] = "tall";
 
-    printf("2a\n");
-
     put(key, 4, sample_data, 128 * sizeof(char));
-
-    printf("4\n");
-
 
     // TODO: How to free the slots in buddy and in general
     while(1);
@@ -224,7 +198,6 @@ int main(int argc, char* argv[]) {
 
 // Put key and value into a slot. Both the key and value will be copied. The preamble must be free when entering.
 void put_into_slot(slot_metadata_t *slot, const char *key, uint8_t key_len, void *value, uint32_t value_len) {
-    printf("Putting tplsize: %u\n", slot->total_payload_size);
     if (slot->status != FREE) {
         fprintf(stderr, "Slot got to be free to put new value into it!\n");
         exit(EXIT_FAILURE);
@@ -248,7 +221,6 @@ void put_into_slot(slot_metadata_t *slot, const char *key, uint8_t key_len, void
     // Copy over the value
     for (uint32_t i = 0; i < value_len; i++) {
         *(((volatile char *) slot->slot_preamble + sizeof(put_request_slot_preamble_t) + key_len + i)) = ((char *)value)[i];
-        printf("putting value[%d] = %d\n", i, ((char *)value)[i]);
     }
 
     slot->slot_preamble->status = PUT;
@@ -263,27 +235,17 @@ slot_metadata_t *find_available_slot(size_t slot_payload_size) {
         fprintf(stderr, "Too big slot_payload_size\n");
         exit(EXIT_FAILURE);
     }
-    printf("x3\n");
-
 
     int exp = min_twos_complement_bits((uint32_t) slot_payload_size);
-    printf("exp: %d\n", exp);
     uint32_t exp_index = (uint32_t) (exp - MIN_SIZE_ELEMENT_EXP);
     size_t slot_size = POWER_OF_TWO(exp);
-    printf("x4: %d, slot_payload_size: %ld\n", exp_index, slot_payload_size);
 
     for (uint32_t i = 0; i < COMPUTE_SLOT_COUNT(slot_size); i++) {
-        printf("i: %d\n", i);
         slot_metadata_t *slot = &(slots[exp_index][i]);
-        //printf("slots[%d][%d] %p || WEEE: %d\n", exp_index, i, (void *) slot, slots[exp_index][i].total_payload_size);
         if (slot->status == FREE) {
-            printf("found free slot at exp_index: %d and slot index: %d that has total payload size: %u\n", exp_index, i, slots[exp_index][i].total_payload_size);
             return slot;
         }
-        printf("geth\n");
     }
-    printf("x5\n");
-
 
     return NULL;
 }
@@ -312,8 +274,6 @@ sci_callback_action_t put_ack(void *arg, sci_local_data_interrupt_t interrupt, v
     }
     // Got same amount of acks as there are replicas, we must make the slot available again
     // We do not need this, as the replicas actually put this for us: slot_metadata->slot_preamble->status = FREE;
-
-    printf("Got ALL acks!!\n");
 
     slot_metadata->ack_count = 0;
     slot_metadata->status = FREE;
