@@ -13,6 +13,8 @@ add_library(commonLib STATIC
         power_of_two.h
         power_of_two.c
         index_data_protocol.c
+        segment_utils.c
+        segment_utils.h
 )
 
 target_include_directories(commonLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

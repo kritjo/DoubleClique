@@ -5,27 +5,7 @@
 #include "sisci_glob_defs.h"
 #include "put_request_region_thread.h"
 #include "index_data_protocol.h"
-
-void create_plain_segment_and_set_available(sci_desc_t sd, sci_local_segment_t *segment, size_t size, int segment_id) {
-    SEOE(SCICreateSegment,
-         sd,
-         segment,
-         segment_id,
-         size,
-         NO_CALLBACK,
-         NO_ARG,
-         NO_FLAGS);
-
-    SEOE(SCIPrepareSegment,
-         *segment,
-         ADAPTER_NO,
-         NO_FLAGS);
-
-    SEOE(SCISetSegmentAvailable,
-         *segment,
-         ADAPTER_NO,
-         NO_FLAGS);
-}
+#include "segment_utils.h"
 
 int main(int argc, char* argv[]) {
     sci_desc_t sd;
