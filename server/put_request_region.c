@@ -125,19 +125,58 @@ int put_request_region_poller(void *arg) {
 
         printf("d\n");
 
-        void *data = (void *) (slot_read + sizeof(put_request_slot_preamble_t) + slot_read->key_length);
+        void *data = (void *) ((char *) slot_read + sizeof(put_request_slot_preamble_t) + slot_read->key_length);
 
         uint32_t key_hash = super_fast_hash((void *) key, slot_read->key_length);
         bool inserted = false;
 
+//        for (uint32_t b = 0; b < slot_read->value_length + slot_read->key_length + sizeof(put_request_slot_preamble_t); b++) {
+//            printf("value[%d] = %u\n", b, ((unsigned char *) data)[b]);
+//        }
+
+        printf("slot_read pointer: %p\n", (void *) slot_read);
+        printf("data pointer: %p\n", (void *) data);
+
         printf("e\n");
         for (uint8_t slot = 0; slot < INDEX_SLOTS_PR_BUCKET; slot++) {
             index_entry_t *index_slot = (index_entry_t *) GET_SLOT_POINTER((char *) args->index_region, key_hash % INDEX_BUCKETS, slot);
-            if (index_slot->status == 1) continue;
+            void *allocated_data_table;
 
-            // Allocate a new slot, this means that we would need to TODO: garbage collect the old slot and buddy_free
-            void *allocated_data_table = buddy_malloc(buddy, slot_read->value_length + slot_read->key_length + sizeof(data_entry_preamble_t));
-            ptrdiff_t offset = (char *) args->data_region - (char *) allocated_data_table;
+            if (index_slot->status == 1) {
+                // We need to check if this is a PUT for an existing key, in that case we should overwrite, otherwise
+                // we have to continue the search for an available slot
+
+                // We could first check if the hash matches to short circuit the logic, but for now, lets simply match
+                // the entire key
+
+                data_entry_preamble_t *existing_data_slot = (data_entry_preamble_t *) ((char *) args->data_region + index_slot->offset);
+
+                printf("Checking for continues offset: %zu\n", index_slot->offset);
+                printf("existing_data_slot->key_length: %d\n", existing_data_slot->key_length);
+                printf("slot_read->key_length: %d\n", slot_read->key_length);
+
+                if (existing_data_slot->key_length != slot_read->key_length) continue;
+
+                printf("XX1 Checking for continues\n");
+
+                char *existing_key = (char *) existing_data_slot + sizeof(data_entry_preamble_t);
+
+                if (strncmp(existing_key, key, existing_data_slot->key_length) != 0) continue;
+
+                // Now we know that the key is equal, so we have found a slot which contains the same string, so we can overwrite it
+                // We need to check if the value is same size or smaller or if we need to alloc new and garbage collect the old
+
+                if (slot_read->key_length + slot_read->value_length <= existing_data_slot->key_length + existing_data_slot->data_length) {
+                    allocated_data_table = (void *) existing_data_slot;
+                } else {
+                    fprintf(stderr, "Not implemented support yet for updates with larger values\n");
+                    exit(EXIT_FAILURE);
+                }
+            } else {
+                allocated_data_table = buddy_malloc(buddy, slot_read->value_length + slot_read->key_length + sizeof(data_entry_preamble_t));
+            }
+
+            ptrdiff_t offset = (char *) allocated_data_table - (char *) args->data_region;
 
             data_entry_preamble_t *data_entry_preamble = (data_entry_preamble_t *) allocated_data_table;
             data_entry_preamble->key_length = slot_read->key_length;
@@ -150,6 +189,7 @@ int put_request_region_poller(void *arg) {
             memcpy(data_location_in_table, data, slot_read->value_length);
 
             index_slot->offset = offset;
+            printf("Inserting to index slot with offset %zu\n", offset);
             index_slot->hash = key_hash;
             index_slot->version_number = slot_read->version_number;
             index_slot->status = 1;

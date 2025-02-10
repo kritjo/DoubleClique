@@ -200,9 +200,9 @@ int main(int argc, char* argv[]) {
     }
     printf("2\n");
 
-    int sample_data[256];
+    unsigned char sample_data[128];
 
-    for (int i = 0; i < 256; i++) {
+    for (unsigned char i = 0; i < 128; i++) {
         sample_data[i] = i;
     }
 
@@ -210,11 +210,7 @@ int main(int argc, char* argv[]) {
 
     printf("2a\n");
 
-    slot_metadata_t *slot = find_available_slot(256 * sizeof(int) + 4);
-
-    printf("3\n");
-
-    put_into_slot(slot, key, 4, sample_data, 256 * sizeof(int));
+    put(key, 4, sample_data, 128 * sizeof(char));
 
     printf("4\n");
 
@@ -256,6 +252,7 @@ void put_into_slot(slot_metadata_t *slot, const char *key, uint8_t key_len, void
     // Copy over the value
     for (uint32_t i = 0; i < value_len; i++) {
         *(((volatile char *) slot->slot_preamble + sizeof(put_request_slot_preamble_t) + key_len + i)) = ((char *)value)[i];
+        printf("putting value[%d] = %d\n", i, ((char *)value)[i]);
     }
 
     slot->slot_preamble->status = PUT;
@@ -325,5 +322,26 @@ sci_callback_action_t put_ack(void *arg, sci_local_data_interrupt_t interrupt, v
     slot_metadata->ack_count = 0;
     slot_metadata->status = FREE;
 
+    sleep(1);
+
+    unsigned char sample_data[128];
+
+    for (unsigned char i = 0; i < 128; i++) {
+        sample_data[i] = i;
+    }
+
+    char key[] = "tall";
+
+    printf("2a\n");
+
+    put(key, 4, sample_data, 128 * sizeof(char));
+
+    printf("4\n");
+
     return SCI_CALLBACK_CONTINUE;
+}
+
+void put(const char *key, uint8_t key_len, void *value, uint32_t value_len) {
+    slot_metadata_t *slot = find_available_slot(key_len + value_len);
+    put_into_slot(slot, key, key_len, value, value_len);
 }
