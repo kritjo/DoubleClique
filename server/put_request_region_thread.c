@@ -65,8 +65,10 @@ int put_request_region_poller(void *arg) {
 
         bool update = true;
         index_entry_t *index_slot = existing_slot_for_key(args->index_region, args->data_region, key_hash, slot_read->key_length, key);
-        if (index_slot == NULL) update = false;
-        index_slot = find_available_index_slot(args->index_region, key_hash);
+        if (index_slot == NULL) {
+            update = false;
+            index_slot = find_available_index_slot(args->index_region, key_hash);
+        }
         if (index_slot == NULL) {
             //TODO: see line below
             fprintf(stderr, "Did not find any available slots for request, should probably handle this somehow\n");
@@ -94,7 +96,7 @@ int put_request_region_poller(void *arg) {
                         slot_read->version_number);
 
 
-        printf("New put_into_slot request with key %s inserted\n", key);
+        printf("New put_into_slot request with key %s inserted at index_slot %p and data_slot %p\n", key, (void *) index_slot, (void *) data_slot);
         send_ack(args->replica_number, ack_data_interrupt, put_request_segment->header_slots[current_head_slot]);
 
         put_request_segment->header_slots[current_head_slot] = 0; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted

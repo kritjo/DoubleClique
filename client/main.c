@@ -52,7 +52,10 @@ int main(int argc, char* argv[]) {
     }
 
     char key[] = "tall";
+    char key2[] = "tall2";
 
+    put(key, 4, sample_data, sizeof(sample_data));
+    put(key2, 5, sample_data, sizeof(sample_data));
     put(key, 4, sample_data, sizeof(sample_data));
 
     // TODO: How to free the slots in buddy and in general
