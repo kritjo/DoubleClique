@@ -1,8 +1,8 @@
 add_executable(client
         main.c
         main.h
-        put.c
-        put.h
+        put_request_region_utils.c
+        put_request_region_utils.h
         slots.h
         slots.c)
 
