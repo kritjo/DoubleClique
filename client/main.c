@@ -139,6 +139,7 @@ int main(int argc, char* argv[]) {
     put(key, 4, sample_data, sizeof(sample_data));
     sleep(1); //TODO: Figure out why this is needed, some race condition
     get(key2, 5);
+    sleep(1);
     get(key, 4);
 
     // TODO: How to free the slots in buddy and in general
@@ -171,10 +172,8 @@ static void *get(const char *key, uint8_t key_len) {
         stored_index_data[replica_index].completed = false;
 
         uint32_t bucket_no = key_hash % INDEX_BUCKETS;
-        printf("bucket number: %u\n", bucket_no);
 
         size_t offset = bucket_no * INDEX_SLOTS_PR_BUCKET * sizeof(index_entry_t);
-        printf("offset: %zu\n", offset);
 
         get_index_response_args_t *args = malloc(sizeof(get_index_response_args_t));
         args->replica_index = replica_index;
@@ -184,6 +183,11 @@ static void *get(const char *key, uint8_t key_len) {
 
         block_for_dma(replica_dma_queues[replica_index]);
 
+        pthread_mutex_lock(&mutex);
+        completed_fetches_of_index = 0;
+        pthread_mutex_unlock(&mutex);
+
+        printf("ship it\n");
         SEOE(SCIStartDmaTransfer,
              replica_dma_queues[replica_index],
              get_receive_segment[replica_index],
@@ -205,7 +209,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
     // - if not-> start fetching the data that we would otherwise fetch if this arrived first and decide what to do when last arrives.
     // If it agrees with one of them, great return that, if not abort with an error.
     if (status != SCI_ERR_OK) {
-        fprintf(stderr, "not ok index fetch\n");
+        fprintf(stderr, "not ok index fetch: %s\n", SCIGetErrorString(status));
         while(1);
     }
     printf("Index fetch completed\n");
@@ -290,7 +294,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
 }
 
 sci_callback_action_t data_fetch_completed_callback(void IN *arg, sci_dma_queue_t queue, sci_error_t status) {
-    printf("Data fetch completed\n");
+    printf("data fetch completed\n");
     get_data_response_args_t *args = (get_data_response_args_t *) arg;
 
     // First figure out which of the slots has the correct key
@@ -315,7 +319,7 @@ sci_callback_action_t data_fetch_completed_callback(void IN *arg, sci_dma_queue_
 
     while(1) {
         pthread_mutex_lock(&mutex);
-        if (completed_fetches_of_index >= (REPLICA_COUNT + 1)/2) break;
+        if (completed_fetches_of_index >= (REPLICA_COUNT + 1)/2) { pthread_mutex_unlock(&mutex); break; }
         pthread_mutex_unlock(&mutex);
     }
 
