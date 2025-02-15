@@ -35,14 +35,15 @@ static pthread_mutex_t completed_fetches_mutex;
 // Another pro of doing it this way is that we prioritize the data fetch over a new index fetch, potentially leading to
 // starvation or just very long latencies, even though throughput does not decline.
 static pthread_mutex_t get_in_progress;
+static pending_get_status_t pending_get_status;
 
 static uint8_t completed_fetches_of_index = 0;
 static stored_index_data_t stored_index_data[REPLICA_COUNT];
 
 sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue_t queue, sci_error_t status);
-static void put(const char *key, uint8_t key_len, void *value, uint32_t value_len);
+static void put(const char *key, uint8_t key_len, void *value, uint32_t value_len, bool block_for_completion);
 sci_callback_action_t data_fetch_completed_callback(void IN *arg, sci_dma_queue_t queue, sci_error_t status);
-static void *get(const char *key, uint8_t key_len);
+static get_return_t *get(const char *key, uint8_t key_len);
 
 int main(int argc, char* argv[]) {
     if (argc < REPLICA_COUNT + 1) {
@@ -142,12 +143,20 @@ int main(int argc, char* argv[]) {
     char key[] = "tall";
     char key2[] = "tall2";
 
-    put(key, 4, sample_data, sizeof(sample_data));
-    put(key2, 5, sample_data, sizeof(sample_data));
-    put(key, 4, sample_data, sizeof(sample_data));
-    sleep(1); //TODO: Figure out why this is needed, some race condition
-    get(key2, 5);
-    get(key, 4);
+    put(key, 4, sample_data, sizeof(sample_data), false);
+    put(key2, 5, sample_data, sizeof(sample_data), false);
+    put(key, 4, sample_data, sizeof(sample_data), true);
+
+    get_return_t *return_struct1 = get(key2, 5);
+    get_return_t *return_struct2 = get(key, 4);
+
+    printf("At place 69 of get with data length %u: %u\n", return_struct1->data_length, ((unsigned char *) return_struct1->data)[69]);
+    printf("At place 69 of get with data_2 length %u: %u\n", return_struct2->data_length, ((unsigned char *) return_struct2->data)[69]);
+
+    free(return_struct1->data);
+    free(return_struct2->data);
+    free(return_struct1);
+    free(return_struct2);
 
     // TODO: How to free the slots in buddy and in general
     while(1);
@@ -158,14 +167,17 @@ int main(int argc, char* argv[]) {
     return EXIT_SUCCESS;
 }
 
-static void put(const char *key, uint8_t key_len, void *value, uint32_t value_len) {
+static void put(const char *key, uint8_t key_len, void *value, uint32_t value_len, bool block_for_completion) {
     slot_metadata_t *slot = put_into_available_slot(slots, key, key_len, value, value_len);
     put_request_region->header_slots[free_header_slot] = (size_t) slot->offset;
     free_header_slot = (free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
+    if (block_for_completion) while (slot->status == SLOT_STATUS_PUT);
 }
 
-static void *get(const char *key, uint8_t key_len) {
+// Always blocking semantics as we return the data, you need to free the data after use
+static get_return_t *get(const char *key, uint8_t key_len) {
     pthread_mutex_lock(&get_in_progress);
+    pending_get_status.status = NOT_POSTED;
     // First we need to get the hash of the key
     uint32_t key_hash = super_fast_hash(key, key_len);
     printf("getting key_hash %u\n", key_hash);
@@ -194,6 +206,8 @@ static void *get(const char *key, uint8_t key_len) {
         completed_fetches_of_index = 0;
         pthread_mutex_unlock(&completed_fetches_mutex);
 
+        // TODO: should probably set a timer for the maximum we want to wait on a transfer before sending an abort
+        // so that we can continue with the next get
         printf("ship it\n");
         SEOE(SCIStartDmaTransfer,
              replica_dma_queues[replica_index],
@@ -205,7 +219,38 @@ static void *get(const char *key, uint8_t key_len) {
              index_fetch_completed_callback,
              args,
              SCI_FLAG_USE_CALLBACK | SCI_FLAG_DMA_READ | SCI_FLAG_DMA_GLOBAL);
+
+        pending_get_status.status = POSTED;
     }
+
+    while (pending_get_status.status == POSTED);
+
+    get_return_t *return_struct = malloc(sizeof(get_return_t));
+    if (return_struct == NULL) { //TODO do this for all mallocs
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+
+    switch (pending_get_status.status) {
+        case COMPLETED_SUCCESS:
+            return_struct->status = GET_RETURN_SUCCESS;
+            return_struct->data_length = pending_get_status.data_length;
+            return_struct->data = pending_get_status.data;
+            return_struct->error_message = no_error_msg;
+            break;
+        case COMPLETED_ERROR:
+            return_struct->status = GET_RETURN_ERROR;
+            return_struct->data_length = 0;
+            return_struct->data = NULL;
+            return_struct->error_message = generic_error_msg;
+        case NOT_POSTED:
+        case POSTED:
+        default:
+            fprintf(stderr, "Got illegal status from pending_get_status\n");
+            exit(EXIT_FAILURE);
+    };
+
+    return return_struct;
 }
 
 sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue_t queue, sci_error_t status) {
@@ -335,13 +380,10 @@ sci_callback_action_t data_fetch_completed_callback(void IN *arg, sci_dma_queue_
     }
 
     if (correct_vnr_count >= (REPLICA_COUNT + 1)/2) {
-        // We have found the right one
-        printf("Found data with key: %s\n", key);
-        /*unsigned char *data = (unsigned char *) data_slot + args->key_len;
-        for (long i = 0; i < stored_index_data[args->replica_index].slots[correct_slot].data_length; i++) {
-            printf("data[%ld] = %u\n", i, *(data + i));
-        }*/
-        //TODO: Return this somehow to the client function
+        pending_get_status.data_length = stored_index_data[args->replica_index].slots[correct_slot].data_length;
+        pending_get_status.data = malloc(pending_get_status.data_length);
+        memcpy(pending_get_status.data, data_slot + args->key_len, pending_get_status.data_length);
+        pending_get_status.status = COMPLETED_SUCCESS;
     } else {
         // TODO: Found conflicting and need to do new data fetch if we find a quorum
         fprintf(stderr, "Found conflicting\n");

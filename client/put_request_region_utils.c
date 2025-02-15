@@ -92,6 +92,8 @@ static sci_callback_action_t put_ack_callback(void *arg, sci_local_data_interrup
     slot_metadata->ack_count = 0;
     slot_metadata->status = SLOT_STATUS_FREE;
 
+    //TODO: should post some kind of completion or have block semantics
+
     return SCI_CALLBACK_CONTINUE;
 }
 
