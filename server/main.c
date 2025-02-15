@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <sisci_api.h>
+#include <string.h>
 #include "sisci_glob_defs.h"
 #include "put_request_region_thread.h"
 #include "index_data_protocol.h"
@@ -41,11 +42,17 @@ int main(int argc, char* argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    memset(index, 0, INDEX_REGION_SIZE);
+
+    printf("char at index 0: %u (%p)\n", *((char *)index), index);
+
     data = SCIMapLocalSegment(data_segment, &data_map, NO_OFFSET, DATA_REGION_SIZE, NO_SUGGESTED_ADDRESS, NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
         fprintf(stderr, "SCIMapLocalSegment failed: %s\n", SCIGetErrorString(sci_error));
         exit(EXIT_FAILURE);
     }
+
+    memset(data, 0, DATA_REGION_SIZE);
 
     put_request_region_poller_thread_args_t args;
     args.sd = sd;

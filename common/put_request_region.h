@@ -41,7 +41,7 @@ typedef struct {
     size_t offset;
 } slot_bucket_t;
 
-extern slot_bucket_t put_region_bucket_desc[BUCKET_COUNT];
+extern slot_bucket_t put_region_bucket_desc[PUT_REQUEST_BUCKETS];
 
 //Slot utils
 #define COMPUTE_SLOT_COUNT(slot_size) \

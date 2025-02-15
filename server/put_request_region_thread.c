@@ -32,7 +32,6 @@ static inline void *buddy_wrapper(size_t size) {
 
 int put_request_region_poller(void *arg) {
     put_request_region_poller_thread_args_t *args = (put_request_region_poller_thread_args_t *) arg;
-
     init_put_request_region(args->sd, &put_request_segment);
     put_request_segment->status = INACTIVE;
 
@@ -64,6 +63,7 @@ int put_request_region_poller(void *arg) {
 
         uint32_t key_hash = super_fast_hash((void *) key, slot_read->key_length);
         void *data = (void *) ((char *) slot_read + sizeof(put_request_slot_preamble_t) + slot_read->key_length);
+        printf("Key: |%s|. hash: %u\n", key, key_hash);
 
         bool update;
         index_entry_t *index_slot = existing_slot_for_key(args->index_region, args->data_region, key_hash, slot_read->key_length, key);
@@ -106,7 +106,13 @@ int put_request_region_poller(void *arg) {
                         slot_read->version_number);
 
 
-        printf("New put_into_slot request with key %s inserted at index_slot %p and data_slot %p\n", key, (void *) index_slot, (void *) data_slot);
+        printf("New put_into_slot request with key %s inserted at index_slot %p and data_slot %p, offset at index region: %zu. Bucket no: %lu\n", key, (void *) index_slot, (void *) data_slot, ((char *) index_slot) - ((char *) args->index_region), key_hash % INDEX_BUCKETS);
+
+        printf("Total buckets: %lu\n", INDEX_BUCKETS);
+
+        index_entry_t *ie = (index_entry_t *) (((char *) args->index_region) + 8168832);
+        printf("At offset 8168832 that gives us addr %p, we have hash: %u\n", (void *) ie, ie->hash);
+
         send_ack(args->replica_number, ack_data_interrupt, put_request_segment->header_slots[current_head_slot]);
 
         put_request_segment->header_slots[current_head_slot] = 0; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted

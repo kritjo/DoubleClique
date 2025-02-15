@@ -4,7 +4,7 @@
 #include "put_request_region.h"
 #include "sisci_glob_defs.h"
 
-slot_bucket_t put_region_bucket_desc[BUCKET_COUNT];
+slot_bucket_t put_region_bucket_desc[PUT_REQUEST_BUCKETS];
 
 size_t put_region_size(void) {
     static size_t size = 0;
@@ -33,7 +33,7 @@ uint32_t total_slots(void) {
     static uint32_t count = 0;
     if (count != 0) return count;
 
-    for (uint32_t i = 0; i < BUCKET_COUNT; i++) {
+    for (uint32_t i = 0; i < PUT_REQUEST_BUCKETS; i++) {
         size_t exp = MIN_SIZE_ELEMENT_EXP + i;
         size_t slot_size = POWER_OF_TWO(exp);
         count += COMPUTE_SLOT_COUNT(slot_size);
@@ -45,7 +45,7 @@ uint32_t total_slots(void) {
 // Inits the descriptor table that points to buckets of different sizes (exponents)
 void init_bucket_desc(void) {
     size_t offset = 0;
-    for (uint32_t i = 0; i < BUCKET_COUNT; i++) {
+    for (uint32_t i = 0; i < PUT_REQUEST_BUCKETS; i++) {
         size_t exp = MIN_SIZE_ELEMENT_EXP + i;
         size_t slot_size = POWER_OF_TWO(exp);
 
@@ -58,11 +58,11 @@ void init_bucket_desc(void) {
 
 // Returns a bucket number from an offset in the put region, the offset is measured without the preamble
 uint32_t get_bucket_no_from_offset(size_t offset) {
-    for (uint32_t bucket_no = 0; bucket_no < BUCKET_COUNT - 1; bucket_no++) {
+    for (uint32_t bucket_no = 0; bucket_no < PUT_REQUEST_BUCKETS - 1; bucket_no++) {
         if (offset < put_region_bucket_desc[bucket_no+1].offset)
             return bucket_no;
     }
-    return BUCKET_COUNT - 1;
+    return PUT_REQUEST_BUCKETS - 1;
 }
 
 // Given an offset and a bucket number, return the slot number

@@ -10,7 +10,7 @@
 #define MIN_SIZE_ELEMENT (POWER_OF_TWO(MIN_SIZE_ELEMENT_EXP))
 #define MAX_SIZE_ELEMENT_EXP 11 // User needs to tune
 #define MAX_SIZE_ELEMENT (POWER_OF_TWO(MAX_SIZE_ELEMENT_EXP))
-#define BUCKET_COUNT (MAX_SIZE_ELEMENT_EXP - MIN_SIZE_ELEMENT_EXP + 1) // plus 1 because we want it to be inclusive
+#define PUT_REQUEST_BUCKETS (MAX_SIZE_ELEMENT_EXP - MIN_SIZE_ELEMENT_EXP + 1) // plus 1 because we want it to be inclusive
 
 static int replica_index_segment_id[REPLICA_COUNT] = {101, 102, 103};
 static int replica_data_segment_id[REPLICA_COUNT] = {201, 202, 203};

@@ -15,6 +15,8 @@ add_library(commonLib STATIC
         index_data_protocol.c
         segment_utils.c
         segment_utils.h
+        dma_utils.c
+        dma_utils.h
 )
 
 target_include_directories(commonLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
