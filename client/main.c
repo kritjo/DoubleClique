@@ -138,6 +138,7 @@ int main(int argc, char* argv[]) {
     put(key2, 5, sample_data, sizeof(sample_data));
     put(key, 4, sample_data, sizeof(sample_data));
     sleep(1); //TODO: Figure out why this is needed, some race condition
+    get(key2, 5);
     get(key, 4);
 
     // TODO: How to free the slots in buddy and in general
@@ -181,17 +182,6 @@ static void *get(const char *key, uint8_t key_len) {
         args->key = key;
         args->key_len = key_len;
 
-#define DMA_ALIGNMENT 2048 // TODO why is SCI_Q_ADAPTER_DMA_OFFSET_ALIGNMENT returning 0 instead of this...
-        uint32_t offset_alignment_adjustment = offset % DMA_ALIGNMENT;
-        printf("alignment %u\n", offset_alignment_adjustment);
-        uint32_t transfer_size = DMA_ALIGNMENT;
-        if (DMA_ALIGNMENT - offset_alignment_adjustment < (sizeof(index_entry_t) * INDEX_SLOTS_PR_BUCKET)) {
-            transfer_size += (sizeof(index_entry_t) * INDEX_SLOTS_PR_BUCKET); // TODO should experiment if *= 2 or smth is really faster. aligned with something
-        }
-#undef DMA_ALIGNMENT
-
-        args->transfer_offset = offset_alignment_adjustment;
-
         block_for_dma(replica_dma_queues[replica_index]);
 
         SEOE(SCIStartDmaTransfer,
@@ -199,8 +189,8 @@ static void *get(const char *key, uint8_t key_len) {
              get_receive_segment[replica_index],
              index_segments[replica_index],
              NO_OFFSET,
-             transfer_size,
-             offset - offset_alignment_adjustment,
+             INDEX_SLOTS_PR_BUCKET * sizeof(index_entry_t), // TODO: Will it go quicker if we align this?
+             offset,
              index_fetch_completed_callback,
              args,
              SCI_FLAG_USE_CALLBACK | SCI_FLAG_DMA_READ | SCI_FLAG_DMA_GLOBAL);
@@ -226,7 +216,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
 
     stored_index_data[replica_index].completed = true;
 
-    index_entry_t *slot = (index_entry_t *) ((char *) get_receive_data[replica_index] + args->transfer_offset);
+    index_entry_t *slot = (index_entry_t *) get_receive_data[replica_index];
 
     for (uint8_t slot_index = 0; slot_index < INDEX_SLOTS_PR_BUCKET; slot++, slot_index++) {
         if (slot->hash != key_hash) continue;
@@ -345,11 +335,11 @@ sci_callback_action_t data_fetch_completed_callback(void IN *arg, sci_dma_queue_
     if (correct_vnr_count >= (REPLICA_COUNT + 1)/2) {
         // We have found the right one
         printf("Found data with key: %s\n", key);
-        unsigned char *data = (unsigned char *) data_slot + args->key_len;
+        /*unsigned char *data = (unsigned char *) data_slot + args->key_len;
         for (long i = 0; i < stored_index_data[args->replica_index].slots[correct_slot].data_length; i++) {
             printf("data[%ld] = %u\n", i, *(data + i));
-        }
-
+        }*/
+        //TODO: Return this somehow to the client function
     } else {
         // TODO: Found conflicting and need to do new data fetch if we find a quorum
         fprintf(stderr, "Found conflicting\n");

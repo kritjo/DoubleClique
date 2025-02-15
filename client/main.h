@@ -17,7 +17,6 @@ typedef struct {
     uint32_t key_hash;
     uint8_t key_len;
     const char *key;
-    uint32_t transfer_offset;
 } get_index_response_args_t;
 
 typedef struct {
