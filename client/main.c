@@ -27,7 +27,14 @@ static volatile put_request_region_t *put_request_region;
 static uint32_t free_header_slot = 0;
 static slot_metadata_t *slots[PUT_REQUEST_BUCKETS];
 
-static pthread_mutex_t mutex;
+static pthread_mutex_t completed_fetches_mutex;
+
+// Only allow a single get at a time, the thing is that we want to use the DMA Callbacks, which means that we can not
+// simultaneously use the wait for dma queue function. If we did not use the callbacks but rather the wait for function
+// we could still not have any more stuff in flight, so I don't think that we are loosing anything in doing it this way.
+// Another pro of doing it this way is that we prioritize the data fetch over a new index fetch, potentially leading to
+// starvation or just very long latencies, even though throughput does not decline.
+static pthread_mutex_t get_in_progress;
 
 static uint8_t completed_fetches_of_index = 0;
 static stored_index_data_t stored_index_data[REPLICA_COUNT];
@@ -48,7 +55,8 @@ int main(int argc, char* argv[]) {
     connect_to_put_request_region(sd, &put_request_region);
     init_slots(slots, put_request_region);
 
-    pthread_mutex_init(&mutex, NULL);
+    pthread_mutex_init(&completed_fetches_mutex, NULL);
+    pthread_mutex_init(&get_in_progress, NULL);
 
     for (uint8_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
         char *endptr;
@@ -139,7 +147,6 @@ int main(int argc, char* argv[]) {
     put(key, 4, sample_data, sizeof(sample_data));
     sleep(1); //TODO: Figure out why this is needed, some race condition
     get(key2, 5);
-    sleep(1);
     get(key, 4);
 
     // TODO: How to free the slots in buddy and in general
@@ -157,8 +164,8 @@ static void put(const char *key, uint8_t key_len, void *value, uint32_t value_le
     free_header_slot = (free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 }
 
-//TODO: support for concurrent gets
 static void *get(const char *key, uint8_t key_len) {
+    pthread_mutex_lock(&get_in_progress);
     // First we need to get the hash of the key
     uint32_t key_hash = super_fast_hash(key, key_len);
     printf("getting key_hash %u\n", key_hash);
@@ -183,9 +190,9 @@ static void *get(const char *key, uint8_t key_len) {
 
         block_for_dma(replica_dma_queues[replica_index]);
 
-        pthread_mutex_lock(&mutex);
+        pthread_mutex_lock(&completed_fetches_mutex);
         completed_fetches_of_index = 0;
-        pthread_mutex_unlock(&mutex);
+        pthread_mutex_unlock(&completed_fetches_mutex);
 
         printf("ship it\n");
         SEOE(SCIStartDmaTransfer,
@@ -210,6 +217,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
     // If it agrees with one of them, great return that, if not abort with an error.
     if (status != SCI_ERR_OK) {
         fprintf(stderr, "not ok index fetch: %s\n", SCIGetErrorString(status));
+        //TODO: We have to record this somehow, so that we can cancel the mutex if we dont receive a quorum with the rest of the index fetches
         while(1);
     }
     printf("Index fetch completed\n");
@@ -231,21 +239,15 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
                sizeof(*slot));
     }
 
-    printf("locing mutex\n");
-    pthread_mutex_lock(&mutex);
-    printf("got mutex\n");
+    pthread_mutex_lock(&completed_fetches_mutex);
     if (completed_fetches_of_index == 0) {
-        printf("f1\n");
         completed_fetches_of_index++;
-        pthread_mutex_unlock(&mutex);
-        printf("f2\n");
+        pthread_mutex_unlock(&completed_fetches_mutex);
 
         slot = (index_entry_t *) get_receive_data[replica_index];
         uint8_t slots_with_hash_count = 0;
         dis_dma_vec_t dma_vec[INDEX_SLOTS_PR_BUCKET];
         unsigned int local_offset = 0;
-
-        printf("f3\n");
 
         for (uint8_t slot_index = 0; slot_index < stored_index_data[replica_index].slots_length; slot++, slot_index++) {
             dma_vec[slots_with_hash_count].size = slot->key_length + slot->data_length;
@@ -257,10 +259,8 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
 
             slots_with_hash_count++;
         }
-        printf("f4\n");
 
         if (slots_with_hash_count == 0) {
-            printf("xxxf5\n");
             return SCI_CALLBACK_CONTINUE;
         }
 
@@ -272,7 +272,6 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
         data_args->replica_index = (uint8_t) args->replica_index;
 
         // Fetch the data segments for all those slots
-        printf("sending dma transfer\n");
         SEOE(SCIStartDmaTransferVec,
              replica_dma_queues[replica_index],
              get_receive_segment[replica_index],
@@ -283,9 +282,8 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
              data_args,
              SCI_FLAG_USE_CALLBACK | SCI_FLAG_DMA_READ | SCI_FLAG_DMA_GLOBAL);
     } else {
-        printf("a1\n");
         completed_fetches_of_index++;
-        pthread_mutex_unlock(&mutex);
+        pthread_mutex_unlock(&completed_fetches_mutex);
     }
 
     free (args);
@@ -318,9 +316,9 @@ sci_callback_action_t data_fetch_completed_callback(void IN *arg, sci_dma_queue_
     }
 
     while(1) {
-        pthread_mutex_lock(&mutex);
-        if (completed_fetches_of_index >= (REPLICA_COUNT + 1)/2) { pthread_mutex_unlock(&mutex); break; }
-        pthread_mutex_unlock(&mutex);
+        pthread_mutex_lock(&completed_fetches_mutex);
+        if (completed_fetches_of_index >= (REPLICA_COUNT + 1)/2) { pthread_mutex_unlock(&completed_fetches_mutex); break; }
+        pthread_mutex_unlock(&completed_fetches_mutex);
     }
 
     uint8_t correct_vnr_count = 0;
@@ -349,6 +347,7 @@ sci_callback_action_t data_fetch_completed_callback(void IN *arg, sci_dma_queue_
         fprintf(stderr, "Found conflicting\n");
     }
 
+    pthread_mutex_unlock(&get_in_progress);
     free(args);
     return SCI_CALLBACK_CONTINUE;
 }
