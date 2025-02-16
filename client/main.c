@@ -26,7 +26,11 @@ static volatile put_request_region_t *put_request_region;
 static uint32_t free_header_slot = 0;
 static slot_metadata_t *slots[PUT_REQUEST_BUCKETS];
 
-static pthread_mutex_t completed_fetches_mutex;
+static pthread_mutex_t completed_index_fetches_mutex;
+static uint8_t completed_fetches_of_index = 0;
+static size_t completed_index_fetch_replica_index_order[REPLICA_COUNT];
+static stored_index_data_t stored_index_data[REPLICA_COUNT];
+
 
 // Only allow a single get at a time, the thing is that we want to use the DMA Callbacks, which means that we can not
 // simultaneously use the wait for dma queue function. If we did not use the callbacks but rather the wait for function
@@ -36,12 +40,9 @@ static pthread_mutex_t completed_fetches_mutex;
 static pthread_mutex_t get_in_progress;
 static pending_get_status_t pending_get_status;
 
-static uint8_t completed_fetches_of_index = 0;
-static size_t completed_index_fetch_replica_index_order[REPLICA_COUNT];
-static stored_index_data_t stored_index_data[REPLICA_COUNT];
-static uint8_t completed_fetches_of_data = 0;
+static pthread_mutex_t completed_contingency_fetches_mutex;
+static uint32_t completed_contingency_fetches = 0;
 static uint32_t found_contingency_candidates_count = 0;
-static uint32_t completed_contingency_candidates_count = 0;
 
 sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue_t queue, sci_error_t status);
 static void put(const char *key, uint8_t key_len, void *value, uint32_t value_len, bool block_for_completion);
@@ -61,8 +62,9 @@ int main(int argc, char* argv[]) {
     connect_to_put_request_region(sd, &put_request_region); //TODO: Reset some state if client reconnects?
     init_slots(slots, put_request_region);
 
-    pthread_mutex_init(&completed_fetches_mutex, NULL);
+    pthread_mutex_init(&completed_index_fetches_mutex, NULL);
     pthread_mutex_init(&get_in_progress, NULL);
+    pthread_mutex_init(&completed_contingency_fetches_mutex, NULL);
 
     for (uint8_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
         char *endptr;
@@ -185,7 +187,7 @@ static void put(const char *key, uint8_t key_len, void *value, uint32_t value_le
     if (block_for_completion) while (slot->status == SLOT_STATUS_PUT);
 }
 
-// Always blocking semantics as we return the data, you need to free the data after use
+// Always blocking semantics as we return the data, you need to free the data and return struct itself after use
 static get_return_t *get(const char *key, uint8_t key_len) {
     // TODO: Check if having a larger dma queue would allow us to post more stuff at one time
     pthread_mutex_lock(&get_in_progress);
@@ -219,9 +221,9 @@ static get_return_t *get(const char *key, uint8_t key_len) {
         args->key = key;
         args->key_len = key_len;
 
-        pthread_mutex_lock(&completed_fetches_mutex);
+        pthread_mutex_lock(&completed_index_fetches_mutex);
         completed_fetches_of_index = 0;
-        pthread_mutex_unlock(&completed_fetches_mutex);
+        pthread_mutex_unlock(&completed_index_fetches_mutex);
 
         // TODO: should probably set a timer for the maximum we want to wait on a transfer before sending an abort
         // so that we can continue with the next get
@@ -302,11 +304,11 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
         // We let this fall through as it will be handled by slots_length being 0
     }
 
-    pthread_mutex_lock(&completed_fetches_mutex);
+    pthread_mutex_lock(&completed_index_fetches_mutex);
     completed_index_fetch_replica_index_order[completed_fetches_of_index] = replica_index;
     if (completed_fetches_of_index == 0) {
         completed_fetches_of_index++;
-        pthread_mutex_unlock(&completed_fetches_mutex);
+        pthread_mutex_unlock(&completed_index_fetches_mutex);
 
         slot = (index_entry_t *) stored_index_data[replica_index].slots;
         uint8_t slots_with_hash_count = 0;
@@ -336,6 +338,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
         get_data_response_args_t *data_args = malloc(sizeof(get_data_response_args_t));
         if (data_args == NULL) {
             perror("malloc");
+            free(args);
             exit(EXIT_FAILURE);
         }
 
@@ -344,7 +347,6 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
         data_args->replica_index = (uint8_t) args->replica_index;
 
         // Fetch the data segments for all those slots
-        completed_fetches_of_data = 0;
         SEOE(SCIStartDmaTransferVec,
              replica_dma_queues[replica_index],
              get_receive_segment[replica_index],
@@ -356,7 +358,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
              SCI_FLAG_USE_CALLBACK | SCI_FLAG_DMA_READ | SCI_FLAG_DMA_GLOBAL);
     } else {
         completed_fetches_of_index++;
-        pthread_mutex_unlock(&completed_fetches_mutex);
+        pthread_mutex_unlock(&completed_index_fetches_mutex);
     }
 
     free(args);
@@ -365,16 +367,15 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
 }
 
 sci_callback_action_t preferred_data_fetch_completed_callback(void IN *arg, sci_dma_queue_t queue, sci_error_t status) {
+    get_data_response_args_t *args = (get_data_response_args_t *) arg;
+
     if (status != SCI_ERR_OK) {
-        fprintf(stderr, "not ok data fetch: %s\n", SCIGetErrorString(status));
-        // TODO: retry?
-        while(1);
+        contingency_backend_fetch(NULL, 0, args->key);
+        free(args);
+        return SCI_CALLBACK_CONTINUE;
     }
 
     printf("data fetch completed\n");
-    get_data_response_args_t *args = (get_data_response_args_t *) arg;
-
-    completed_fetches_of_data++;
 
     // First figure out which of the slots has the correct key
     long version_number = -1;
@@ -410,9 +411,9 @@ sci_callback_action_t preferred_data_fetch_completed_callback(void IN *arg, sci_
 
     // TODO: timeout this loop
     while(1) {
-        pthread_mutex_lock(&completed_fetches_mutex);
-        if (completed_fetches_of_index >= (REPLICA_COUNT + 1)/2) { pthread_mutex_unlock(&completed_fetches_mutex); break; }
-        pthread_mutex_unlock(&completed_fetches_mutex);
+        pthread_mutex_lock(&completed_index_fetches_mutex);
+        if (completed_fetches_of_index >= (REPLICA_COUNT + 1)/2) { pthread_mutex_unlock(&completed_index_fetches_mutex); break; }
+        pthread_mutex_unlock(&completed_index_fetches_mutex);
     }
 
     uint8_t correct_vnr_count = 0;
@@ -433,6 +434,7 @@ sci_callback_action_t preferred_data_fetch_completed_callback(void IN *arg, sci_
         pending_get_status.data = malloc(pending_get_status.data_length);
         if (pending_get_status.data == NULL) {
             perror("malloc");
+            free(args);
             exit(EXIT_FAILURE);
         }
 
@@ -443,6 +445,7 @@ sci_callback_action_t preferred_data_fetch_completed_callback(void IN *arg, sci_
         contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key);
     }
 
+    free(tried_vnrs); //TODO: this is passed in when contingency is synchronous, if timer added maybe think about
     free(args);
     return SCI_CALLBACK_CONTINUE;
 }
@@ -465,10 +468,10 @@ static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32
 
     // Wait for completion of all index fetches
     while(1) {
-        pthread_mutex_lock(&completed_fetches_mutex);
+        pthread_mutex_lock(&completed_index_fetches_mutex);
         if (completed_fetches_of_index == REPLICA_COUNT) // TODO: Or timer
-            { pthread_mutex_unlock(&completed_fetches_mutex); break; }
-        pthread_mutex_unlock(&completed_fetches_mutex);
+            { pthread_mutex_unlock(&completed_index_fetches_mutex); break; }
+        pthread_mutex_unlock(&completed_index_fetches_mutex);
     }
 
     // Check if we have a quorum of version numbers
@@ -530,7 +533,9 @@ static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32
         local_offset[i] = 0;
     }
 
-    completed_contingency_candidates_count = 0;
+    pthread_mutex_lock(&completed_contingency_fetches_mutex);
+    completed_contingency_fetches = 0;
+    pthread_mutex_unlock(&completed_contingency_fetches_mutex);
 
     // Did find one or more quorums, lets try to get them.
     for (uint32_t candidate_index = 0; candidate_index < found_contingency_candidates_count; candidate_index++) {
@@ -582,12 +587,23 @@ static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32
 
 sci_callback_action_t contingency_data_fetch_completed_callback(void IN *arg, sci_dma_queue_t queue, sci_error_t status) {
     if (status != SCI_ERR_OK) {
-        fprintf(stderr, "not ok contingency fetch: %s\n", SCIGetErrorString(status));
-        // TODO: retry?
-        while(1);
+        pthread_mutex_lock(&completed_contingency_fetches_mutex);
+        if (completed_contingency_fetches == found_contingency_candidates_count) {
+            fprintf(stderr, "not ok contingency fetch: %s\n", SCIGetErrorString(status));
+            pending_get_status.data_length = 0;
+            pending_get_status.data = 0;
+            pending_get_status.status = COMPLETED_ERROR;
+            pending_get_status.error_message = contingency_error;
+            pthread_mutex_unlock(&get_in_progress);
+        }
+        completed_contingency_fetches++;
+        pthread_mutex_unlock(&completed_contingency_fetches_mutex);
+        return SCI_CALLBACK_CONTINUE;
     }
 
-    completed_contingency_candidates_count++;
+    pthread_mutex_lock(&completed_contingency_fetches_mutex);
+    completed_contingency_fetches++;
+    pthread_mutex_unlock(&completed_contingency_fetches_mutex);
 
     contingency_fetch_completed_args_t *args = (contingency_fetch_completed_args_t *) arg;
 
@@ -599,6 +615,7 @@ sci_callback_action_t contingency_data_fetch_completed_callback(void IN *arg, sc
         pending_get_status.data = malloc(pending_get_status.data_length);
         if (pending_get_status.data == NULL) {
             perror("malloc");
+            free(args);
             exit(EXIT_FAILURE);
         }
 
@@ -607,13 +624,15 @@ sci_callback_action_t contingency_data_fetch_completed_callback(void IN *arg, sc
         pthread_mutex_unlock(&get_in_progress);
     } else {
         // No match, if we have received all set error, if not just fall through and let another thread handle it
-        if (completed_contingency_candidates_count == found_contingency_candidates_count) {
+        pthread_mutex_lock(&completed_contingency_fetches_mutex);
+        if (completed_contingency_fetches == found_contingency_candidates_count) {
             pending_get_status.data_length = 0;
             pending_get_status.data = 0;
             pending_get_status.status = COMPLETED_ERROR;
             pending_get_status.error_message = no_data_match;
             pthread_mutex_unlock(&get_in_progress);
         }
+        pthread_mutex_unlock(&completed_contingency_fetches_mutex);
     }
 
     free(args);

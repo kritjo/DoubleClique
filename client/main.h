@@ -79,5 +79,6 @@ typedef struct {
 const char no_error_msg[] = "";
 const char no_index_entries[] = "Found no entries in table that match key\n";
 const char no_data_match[] = "None of the keys with the correct hash has a key that match\n";
+const char contingency_error[] = "There was an error receiving the data during the the contingency fetch\n";
 
 #endif //DOUBLECLIQUE_MAIN_H
