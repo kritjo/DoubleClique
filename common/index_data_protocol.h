@@ -29,7 +29,7 @@ typedef struct {
      +(sizeof(index_entry_t)*(slot_number)))
 
 typedef struct {
-    //uint32_t checksum; TODO: maybe should have a checksum here idk
+    //uint32_t checksum; TODO: maybe should have a checksum here idk if not we at least gotta putt in the version number, so that we know if we have torn reads. A TTL could be future work
 } data_entry_preamble_t;
 
 index_entry_t *existing_slot_for_key(void *index_region, void *data_region, uint32_t key_hash, uint32_t key_length, char *key);

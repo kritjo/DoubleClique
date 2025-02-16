@@ -57,6 +57,24 @@ typedef struct {
     const char *error_message;
 } get_return_t;
 
+typedef struct {
+    uint32_t version_number;
+    uint32_t count;
+    index_entry_t index_entry[REPLICA_COUNT];
+} version_count_t;
+
+typedef struct {
+    uint32_t version_number;
+    index_entry_t index_entry[REPLICA_COUNT];
+} found_candidates_t;
+
+typedef struct {
+    uint32_t replica_index;
+    uint32_t offset;
+    index_entry_t index_entry;
+    const char *key;
+} contingency_fetch_completed_args_t;
+
 const char no_error_msg[] = "";
 const char generic_error_msg[] = "Something went wrong";
 
