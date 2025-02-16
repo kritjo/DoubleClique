@@ -12,11 +12,10 @@
 #include "slots.h"
 #include "put_request_region_utils.h"
 #include "super_fast_hash.h"
-#include "dma_utils.h"
 
 static sci_desc_t sd;
 static sci_dma_queue_t replica_dma_queues[REPLICA_COUNT];
-static sci_local_segment_t get_receive_segment[REPLICA_COUNT]; // TODO: Maybe this needs to be done otherwise if we want asyncronicity with public API
+static sci_local_segment_t get_receive_segment[REPLICA_COUNT];
 static sci_remote_segment_t index_segments[REPLICA_COUNT];
 static sci_remote_segment_t data_segments[REPLICA_COUNT];
 static sci_map_t get_receive_map[REPLICA_COUNT];
@@ -210,6 +209,11 @@ static get_return_t *get(const char *key, uint8_t key_len) {
         size_t offset = bucket_no * INDEX_SLOTS_PR_BUCKET * sizeof(index_entry_t);
 
         get_index_response_args_t *args = malloc(sizeof(get_index_response_args_t));
+        if (args == NULL) {
+            perror("malloc");
+            exit(EXIT_FAILURE);
+        }
+
         args->replica_index = replica_index;
         args->key_hash = key_hash;
         args->key = key;
@@ -239,7 +243,7 @@ static get_return_t *get(const char *key, uint8_t key_len) {
     while (pending_get_status.status == POSTED);
 
     get_return_t *return_struct = malloc(sizeof(get_return_t));
-    if (return_struct == NULL) { //TODO do this for all mallocs
+    if (return_struct == NULL) {
         perror("malloc");
         exit(EXIT_FAILURE);
     }
@@ -255,7 +259,8 @@ static get_return_t *get(const char *key, uint8_t key_len) {
             return_struct->status = GET_RETURN_ERROR;
             return_struct->data_length = 0;
             return_struct->data = NULL;
-            return_struct->error_message = generic_error_msg;
+            return_struct->error_message = pending_get_status.error_message;
+            break;
         case NOT_POSTED:
         case POSTED:
         default:
@@ -268,17 +273,6 @@ static get_return_t *get(const char *key, uint8_t key_len) {
 
 //TODO: Should have a timeout if this callback is never hit, possibly just for the whole get?
 sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue_t queue, sci_error_t status) {
-    // Inside this function we will handle what happens when a single fetch of an index bucket completes
-    // When the first bucket returns, we will immediately fetch the data slot
-    // When the second bucket returns, we will check if it gives us a quorm, if yes return the data that we are already
-    // fetching when it is ready
-    // - if not-> start fetching the data that we would otherwise fetch if this arrived first and decide what to do when last arrives.
-    // If it agrees with one of them, great return that, if not abort with an error.
-    if (status != SCI_ERR_OK) {
-        fprintf(stderr, "not ok index fetch: %s\n", SCIGetErrorString(status));
-        //TODO: We have to record this somehow, so that we can cancel the mutex if we dont receive a quorum with the rest of the index fetches
-        while(1);
-    }
     printf("Index fetch completed\n");
 
     get_index_response_args_t *args = ((get_index_response_args_t *) arg);
@@ -293,14 +287,19 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
 
     stored_index_data[replica_index].slots_length = 0;
 
-    for (uint8_t slot_index = 0; slot_index < INDEX_SLOTS_PR_BUCKET; slot++, slot_index++) {
-        if (slot->status != 1) continue;
-        if (slot->hash != key_hash) continue;
-        if (slot->key_length != args->key_len) continue;
+    if (status == SCI_ERR_OK) {
+        for (uint8_t slot_index = 0; slot_index < INDEX_SLOTS_PR_BUCKET; slot++, slot_index++) {
+            if (slot->status != 1) continue;
+            if (slot->hash != key_hash) continue;
+            if (slot->key_length != args->key_len) continue;
 
-        memcpy(&stored_index_data[replica_index].slots[stored_index_data[replica_index].slots_length++],
-               slot,
-               sizeof(*slot));
+            memcpy(&stored_index_data[replica_index].slots[stored_index_data[replica_index].slots_length++],
+                   slot,
+                   sizeof(*slot));
+        }
+    } else {
+        fprintf(stderr, "not ok index fetch: %s\n", SCIGetErrorString(status));
+        // We let this fall through as it will be handled by slots_length being 0
     }
 
     pthread_mutex_lock(&completed_fetches_mutex);
@@ -326,10 +325,20 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
         }
 
         if (slots_with_hash_count == 0) {
+            // If we either did not find any slots in the preferred replica or if the fetch failed, defer all to the
+            // contingency fetch. This will also mean that we try another backend, as this replica does not have any
+            // candidates
+            contingency_backend_fetch(NULL, 0, args->key);
+            free(args);
             return SCI_CALLBACK_CONTINUE;
         }
 
         get_data_response_args_t *data_args = malloc(sizeof(get_data_response_args_t));
+        if (data_args == NULL) {
+            perror("malloc");
+            exit(EXIT_FAILURE);
+        }
+
         data_args->key_len = args->key_len;
         data_args->key = args->key;
         data_args->replica_index = (uint8_t) args->replica_index;
@@ -370,10 +379,10 @@ sci_callback_action_t preferred_data_fetch_completed_callback(void IN *arg, sci_
     // First figure out which of the slots has the correct key
     long version_number = -1;
     uint8_t correct_slot;
-    char *key = malloc(args->key_len + 1); //TODO: Only for debug purposes
     uint32_t *tried_vnrs = malloc(sizeof(uint32_t) * INDEX_SLOTS_PR_BUCKET);
     if (tried_vnrs == NULL) {
         perror("malloc");
+        free(args);
         exit(EXIT_FAILURE);
     }
 
@@ -389,8 +398,6 @@ sci_callback_action_t preferred_data_fetch_completed_callback(void IN *arg, sci_
         }
 
         version_number = index_slot.version_number;
-        strncpy(key, data_slot, args->key_len);
-        key[args->key_len] = '\0';
         correct_slot = slot;
         break;
     }
@@ -424,6 +431,11 @@ sci_callback_action_t preferred_data_fetch_completed_callback(void IN *arg, sci_
     if (correct_vnr_count >= (REPLICA_COUNT + 1)/2) {
         pending_get_status.data_length = stored_index_data[args->replica_index].slots[correct_slot].data_length;
         pending_get_status.data = malloc(pending_get_status.data_length);
+        if (pending_get_status.data == NULL) {
+            perror("malloc");
+            exit(EXIT_FAILURE);
+        }
+
         memcpy(pending_get_status.data, data_slot + args->key_len, pending_get_status.data_length);
         pending_get_status.status = COMPLETED_SUCCESS;
         pthread_mutex_unlock(&get_in_progress);
@@ -509,7 +521,7 @@ static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32
         pending_get_status.data_length = 0;
         pending_get_status.data = NULL;
         pending_get_status.status = COMPLETED_ERROR;
-        //TODO: Add message to the status
+        pending_get_status.error_message = no_index_entries;
         pthread_mutex_unlock(&get_in_progress);
     }
 
@@ -585,6 +597,11 @@ sci_callback_action_t contingency_data_fetch_completed_callback(void IN *arg, sc
         // Match
         pending_get_status.data_length = args->index_entry.data_length;
         pending_get_status.data = malloc(pending_get_status.data_length);
+        if (pending_get_status.data == NULL) {
+            perror("malloc");
+            exit(EXIT_FAILURE);
+        }
+
         memcpy(pending_get_status.data, slot + args->index_entry.key_length, pending_get_status.data_length);
         pending_get_status.status = COMPLETED_SUCCESS;
         pthread_mutex_unlock(&get_in_progress);
@@ -594,7 +611,7 @@ sci_callback_action_t contingency_data_fetch_completed_callback(void IN *arg, sc
             pending_get_status.data_length = 0;
             pending_get_status.data = 0;
             pending_get_status.status = COMPLETED_ERROR;
-            //TODO: error msg
+            pending_get_status.error_message = no_data_match;
             pthread_mutex_unlock(&get_in_progress);
         }
     }

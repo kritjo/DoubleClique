@@ -43,6 +43,7 @@ typedef struct {
     enum get_status status;
     uint32_t data_length;
     void *data;
+    const char *error_message;
 } pending_get_status_t;
 
 enum get_return_status {
@@ -76,6 +77,7 @@ typedef struct {
 } contingency_fetch_completed_args_t;
 
 const char no_error_msg[] = "";
-const char generic_error_msg[] = "Something went wrong";
+const char no_index_entries[] = "Found no entries in table that match key\n";
+const char no_data_match[] = "None of the keys with the correct hash has a key that match\n";
 
 #endif //DOUBLECLIQUE_MAIN_H
