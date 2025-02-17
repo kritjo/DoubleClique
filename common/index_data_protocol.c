@@ -6,10 +6,8 @@
 
 // Return an existing index slot in the index region for the particular key, NULL if it does not exist
 index_entry_t *existing_slot_for_key(void *index_region, void *data_region, uint32_t key_hash, uint32_t key_length, char *key) {
-    printf("key_hash %% INDEX_BUCKETS: %lu\n", key_hash % INDEX_BUCKETS);
     for (uint8_t slot = 0; slot < INDEX_SLOTS_PR_BUCKET; slot++) {
         index_entry_t *index_slot = (index_entry_t *) GET_SLOT_POINTER((char *) index_region, key_hash % INDEX_BUCKETS, slot);
-        printf("Checking slot %u in bucket %lu, that has offset %lu\n", slot, key_hash % INDEX_BUCKETS, ((INDEX_SLOTS_PR_BUCKET*sizeof(index_entry_t)*(key_hash % INDEX_BUCKETS))+(sizeof(index_entry_t)*slot)));
 
         // If unused obv not update
         if (index_slot->status == 0) continue;
@@ -26,7 +24,6 @@ index_entry_t *existing_slot_for_key(void *index_region, void *data_region, uint
         return index_slot;
     }
 
-    printf("no slots existing\n");
     return NULL;
 }
 
@@ -34,7 +31,6 @@ index_entry_t *existing_slot_for_key(void *index_region, void *data_region, uint
 index_entry_t *find_available_index_slot(void *index_region, uint32_t key_hash) {
     for (uint8_t slot = 0; slot < INDEX_SLOTS_PR_BUCKET; slot++) {
         index_entry_t *index_slot = (index_entry_t *) GET_SLOT_POINTER((char *) index_region, key_hash % INDEX_BUCKETS, slot);
-        printf("Checking slot %u in bucket %lu\n", slot, key_hash % INDEX_BUCKETS);
         if (index_slot->status == 0) return index_slot;
     }
 
@@ -67,7 +63,6 @@ data_entry_preamble_t *find_data_slot_for_index_slot(void *data_region, index_en
 void insert_in_table(void *data_region, index_entry_t *index_slot, data_entry_preamble_t *data_slot, char *key, uint32_t key_length, uint32_t key_hash, void *data, uint32_t data_length, uint32_t version_number) {
     ptrdiff_t offset = (char *) data_slot - (char *) data_region;
 
-    printf("Inserting in table at index addr: %p\n", (void *) index_slot);
     index_slot->key_length = key_length;
     index_slot->data_length = data_length;
 

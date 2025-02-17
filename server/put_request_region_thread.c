@@ -63,7 +63,6 @@ int put_request_region_poller(void *arg) {
 
         uint32_t key_hash = super_fast_hash((void *) key, slot_read->key_length);
         void *data = (void *) ((char *) slot_read + sizeof(put_request_slot_preamble_t) + slot_read->key_length);
-        printf("Key: |%s|. hash: %u\n", key, key_hash);
 
         bool update;
         index_entry_t *index_slot = existing_slot_for_key(args->index_region, args->data_region, key_hash, slot_read->key_length, key);
@@ -104,9 +103,6 @@ int put_request_region_poller(void *arg) {
                         data,
                         slot_read->value_length,
                         slot_read->version_number);
-
-
-        printf("New put_into_slot request with key %s inserted at index_slot %p and data_slot %p, offset at index region: %zu. Bucket no: %lu\n", key, (void *) index_slot, (void *) data_slot, ((char *) index_slot) - ((char *) args->index_region), key_hash % INDEX_BUCKETS);
 
         send_ack(args->replica_number, ack_data_interrupt, put_request_segment->header_slots[current_head_slot]);
 

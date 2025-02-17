@@ -44,7 +44,6 @@ int main(int argc, char* argv[]) {
 
     memset(index, 0, INDEX_REGION_SIZE);
 
-    printf("char at index 0: %u (%p)\n", *((char *)index), index);
 
     data = SCIMapLocalSegment(data_segment, &data_map, NO_OFFSET, DATA_REGION_SIZE, NO_SUGGESTED_ADDRESS, NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {
