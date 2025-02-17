@@ -179,7 +179,7 @@ get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
         if ((ts.tv_sec - ts_pre.tv_sec) != 0 ||
             (ts.tv_nsec - ts_pre.tv_nsec) > GET_TIMEOUT_NS) {
             // Timeout!
-            printf("TIMEOUT_MSG!\n");
+            printf("TIMEOUT!\n");
             for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
                 // Abort all pending DMA operations
                 SEOE(SCIAbortDMAQueue,

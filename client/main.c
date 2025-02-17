@@ -2,11 +2,11 @@
 
 #include <stdlib.h>
 #include <sisci_api.h>
-#include <string.h>
+#include <time.h>
+#include <sched.h>
 
 #include "sisci_glob_defs.h"
 #include "put_request_region.h"
-#include "index_data_protocol.h"
 
 #include "slots.h"
 #include "put_request_region_utils.h"
@@ -21,6 +21,7 @@ static uint32_t free_header_slot = 0;
 static slot_metadata_t *slots[PUT_REQUEST_BUCKETS];
 
 static void put(const char *key, uint8_t key_len, void *value, uint32_t value_len, bool block_for_completion);
+
 
 int main(int argc, char* argv[]) {
     if (argc < REPLICA_COUNT + 1) {
@@ -66,8 +67,8 @@ int main(int argc, char* argv[]) {
     char key[] = "tall";
     char key2[] = "tall2";
 
-    put(key, 4, sample_data, sizeof(sample_data), false);
-    put(key2, 5, sample_data2, sizeof(sample_data2), false);
+    put(key, 4, sample_data, sizeof(sample_data), true);
+    put(key2, 5, sample_data2, sizeof(sample_data2), true);
     put(key, 4, sample_data, sizeof(sample_data), true);
 
     get_return_t *return_struct1 = get_2_phase_read(key2, 5);
@@ -91,9 +92,20 @@ int main(int argc, char* argv[]) {
 }
 
 static void put(const char *key, uint8_t key_len, void *value, uint32_t value_len, bool block_for_completion) {
+    struct timespec start;
+    struct timespec end;
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
     slot_metadata_t *slot = put_into_available_slot(slots, key, key_len, value, value_len);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    printf("on client took before shipping: %ld\n", end.tv_nsec - start.tv_nsec);
+
     put_request_region->header_slots[free_header_slot] = (size_t) slot->offset;
     free_header_slot = (free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
-    if (block_for_completion) while (slot->status == SLOT_STATUS_PUT);
-}
 
+    // I have also tried pthread cond wait without success
+    if (block_for_completion) while (slot->status == SLOT_STATUS_PUT) sched_yield();
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    printf("    before completion: %ld\n", end.tv_nsec - start.tv_nsec);
+}
