@@ -71,6 +71,7 @@ typedef struct {
 
 typedef struct {
     uint32_t replica_index;
+    uint32_t candidate_index;
     uint32_t offset;
     index_entry_t index_entry;
     const char *key;
@@ -80,5 +81,6 @@ const char no_error_msg[] = "";
 const char no_index_entries[] = "Found no entries in table that match key\n";
 const char no_data_match[] = "None of the keys with the correct hash has a key that match\n";
 const char contingency_error[] = "There was an error receiving the data during the the contingency fetch\n";
+const char timeout[] = "The request timed out\n";
 
 #endif //DOUBLECLIQUE_MAIN_H
