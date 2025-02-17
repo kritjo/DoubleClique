@@ -13,6 +13,10 @@
 #include "put_request_region_utils.h"
 #include "super_fast_hash.h"
 
+#define GetReceiveSegmentIdBase 42
+#define GET_TIMEOUT_NS 1000000
+#define CONTINGENCY_WAIT_FOR_INDEX_FETCHES_TIMEOUT_NS 100000
+
 static sci_desc_t sd;
 static sci_dma_queue_t replica_dma_queues[REPLICA_COUNT];
 static sci_local_segment_t get_receive_segment[REPLICA_COUNT];
@@ -87,7 +91,6 @@ int main(int argc, char* argv[]) {
              INDEX_SLOTS_PR_BUCKET,
              NO_FLAGS);
 
-#define GetReceiveSegmentIdBase 42
         SEOE(SCICreateSegment,
              sd,
              &get_receive_segment[replica_index],
@@ -229,8 +232,6 @@ static get_return_t *get(const char *key, uint8_t key_len) {
         completed_fetches_of_index = 0;
         pthread_mutex_unlock(&completed_index_fetches_mutex);
 
-        // TODO: should probably set a timer for the maximum we want to wait on a transfer before sending an abort
-        // so that we can continue with the next get
         SEOE(SCIStartDmaTransfer,
              replica_dma_queues[replica_index],
              get_receive_segment[replica_index],
@@ -258,7 +259,6 @@ static get_return_t *get(const char *key, uint8_t key_len) {
 
     clock_gettime(CLOCK_MONOTONIC, &ts_pre);
     clock_gettime(CLOCK_MONOTONIC, &ts);
-#define GET_TIMEOUT_NS 1000000
 
     while (pending_get_status.status == POSTED) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -345,7 +345,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue
 
         for (uint8_t slot_index = 0; slot_index < stored_index_data[replica_index].slots_length; slot++, slot_index++) {
             dma_vec[slots_with_hash_count].size = slot->key_length + slot->data_length;
-            dma_vec[slots_with_hash_count].remote_offset = (unsigned int) slot->offset; //TODO: should think about all casts and check
+            dma_vec[slots_with_hash_count].remote_offset = (unsigned int) slot->offset;
             dma_vec[slots_with_hash_count].local_offset = local_offset;
             dma_vec[slots_with_hash_count].flags = NO_FLAGS;
 
@@ -471,7 +471,6 @@ static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32
     // If we can not find it in time, just use what we have
     clock_gettime(CLOCK_MONOTONIC, &ts_pre);
     clock_gettime(CLOCK_MONOTONIC, &ts);
-#define CONTINGENCY_WAIT_FOR_INDEX_FETCHES_TIMEOUT_NS 100000
 
     while((ts.tv_sec - ts_pre.tv_sec) == 0 &&
           (ts.tv_nsec = ts_pre.tv_nsec) < CONTINGENCY_WAIT_FOR_INDEX_FETCHES_TIMEOUT_NS) {
@@ -483,7 +482,6 @@ static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32
     }
 
     // Check if we have a quorum of version numbers
-    // TODO: might be scary to loop until REPLICA COUNT if not every replica has completed e.g. timeout occurred idk
     for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
         // For every replica, we need to check all of their returned index entries
         for (uint32_t slot_index = 0; slot_index < stored_index_data[replica_index].slots_length; slot_index++) {
@@ -549,8 +547,6 @@ static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32
 
     // Did find one or more quorums, lets try to get them.
     for (uint32_t candidate_index = 0; candidate_index < found_contingency_candidates_count; candidate_index++) {
-        // TODO: might not want to loop until replica count here either in case not every replica completed?
-        // Even though we are sure that we will hit a match here though so it might not matter after all
         for (uint32_t completed_first_index = 0; completed_first_index < REPLICA_COUNT; completed_first_index++) {
             size_t replica_index = completed_index_fetch_replica_index_order[completed_first_index];
 
@@ -558,7 +554,7 @@ static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32
             if (found_candidates[candidate_index].index_entry[replica_index].status == 0) continue;
 
             // Now we have found the (assumed) fastest replica that has this candidate ship it and continue with next c
-            // TODO: We could optimize it so that if multiple of these candidates were shipped to a single server
+            // We could optimize it so that if multiple of these candidates were shipped to a single server
             // we would switch to a vector dma transfer, but I think that the overhead of computing that outweighs the
             // benefit, at least since we probably usually only have a single candidate
             size_t transfer_size = found_candidates[candidate_index].index_entry[replica_index].key_length +
