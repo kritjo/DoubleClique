@@ -4,7 +4,9 @@ add_executable(client
         put_request_region_utils.c
         put_request_region_utils.h
         slots.h
-        slots.c)
+        slots.c
+        2_phase_read_get.c
+        2_phase_read_get.h)
 
 target_link_libraries(client PRIVATE commonLib)
 target_link_libraries(client PRIVATE SISCI)
