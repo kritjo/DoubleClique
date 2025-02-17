@@ -220,153 +220,160 @@ get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
     return return_struct;
 }
 
-sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue_t queue, sci_error_t status) {
-get_index_response_args_t *args = ((get_index_response_args_t *) arg);
-size_t replica_index = args->replica_index;
-uint32_t key_hash = args->key_hash;
+sci_callback_action_t
+index_fetch_completed_callback(void IN *arg, __attribute__((unused)) sci_dma_queue_t _queue, sci_error_t status) {
+    get_index_response_args_t *args = ((get_index_response_args_t *) arg);
+    size_t replica_index = args->replica_index;
+    uint32_t key_hash = args->key_hash;
 
-stored_index_data[replica_index].completed = true;
+    stored_index_data[replica_index].completed = true;
 
-index_entry_t *slot = (index_entry_t *) get_receive_data[replica_index];
+    index_entry_t *slot = (index_entry_t *) get_receive_data[replica_index];
 
-stored_index_data[replica_index].slots_length = 0;
+    stored_index_data[replica_index].slots_length = 0;
 
-if (status == SCI_ERR_OK) {
-for (uint8_t slot_index = 0; slot_index < INDEX_SLOTS_PR_BUCKET; slot++, slot_index++) {
-if (slot->status != 1) continue;
-if (slot->hash != key_hash) continue;
-if (slot->key_length != args->key_len) continue;
+    if (status == SCI_ERR_OK) {
+        for (uint8_t slot_index = 0; slot_index < INDEX_SLOTS_PR_BUCKET; slot++, slot_index++) {
+            if (slot->status != 1) continue;
+            if (slot->hash != key_hash) continue;
+            if (slot->key_length != args->key_len) continue;
 
-memcpy(&stored_index_data[replica_index].slots[stored_index_data[replica_index].slots_length++],
-slot,
-sizeof(*slot));
-}
-} else {
-fprintf(stderr, "not ok index fetch: %s\n", SCIGetErrorString(status));
+            memcpy(&stored_index_data[replica_index].slots[stored_index_data[replica_index].slots_length++],
+                   slot,
+                   sizeof(*slot));
+        }
+    } else {
+        fprintf(stderr, "not ok index fetch: %s\n", SCIGetErrorString(status));
 // We let this fall through as it will be handled by slots_length being 0
-}
+    }
 
-pthread_mutex_lock(&completed_index_fetches_mutex);
-completed_index_fetch_replica_index_order[completed_fetches_of_index] = replica_index;
-if (completed_fetches_of_index == 0) {
-completed_fetches_of_index++;
-pthread_mutex_unlock(&completed_index_fetches_mutex);
+    pthread_mutex_lock(&completed_index_fetches_mutex);
+    completed_index_fetch_replica_index_order[completed_fetches_of_index] = replica_index;
+    if (completed_fetches_of_index == 0) {
+        completed_fetches_of_index++;
+        pthread_mutex_unlock(&completed_index_fetches_mutex);
 
-slot = (index_entry_t *) stored_index_data[replica_index].slots;
-uint8_t slots_with_hash_count = 0;
-dis_dma_vec_t dma_vec[INDEX_SLOTS_PR_BUCKET];
-unsigned int local_offset = 0;
+        slot = (index_entry_t *) stored_index_data[replica_index].slots;
+        uint8_t slots_with_hash_count = 0;
+        dis_dma_vec_t dma_vec[INDEX_SLOTS_PR_BUCKET];
+        unsigned int local_offset = 0;
 
-for (uint8_t slot_index = 0; slot_index < stored_index_data[replica_index].slots_length; slot++, slot_index++) {
-dma_vec[slots_with_hash_count].size = slot->key_length + slot->data_length;
-dma_vec[slots_with_hash_count].remote_offset = (unsigned int) slot->offset;
-dma_vec[slots_with_hash_count].local_offset = local_offset;
-dma_vec[slots_with_hash_count].flags = NO_FLAGS;
+        for (uint8_t slot_index = 0; slot_index < stored_index_data[replica_index].slots_length; slot++, slot_index++) {
+            dma_vec[slots_with_hash_count].size = slot->key_length + slot->data_length;
+            dma_vec[slots_with_hash_count].remote_offset = (unsigned int) slot->offset;
+            dma_vec[slots_with_hash_count].local_offset = local_offset;
+            dma_vec[slots_with_hash_count].flags = NO_FLAGS;
 
-local_offset += dma_vec[slots_with_hash_count].size;
+            local_offset += dma_vec[slots_with_hash_count].size;
 
-slots_with_hash_count++;
-}
+            slots_with_hash_count++;
+        }
 
-if (slots_with_hash_count == 0) {
+        if (slots_with_hash_count == 0) {
 // If we either did not find any slots in the preferred replica or if the fetch failed, defer all to the
 // contingency fetch. This will also mean that we try another backend, as this replica does not have any
 // candidates
-contingency_backend_fetch(NULL, 0, args->key);
-return SCI_CALLBACK_CONTINUE;
-}
+            contingency_backend_fetch(NULL, 0, args->key);
+            return SCI_CALLBACK_CONTINUE;
+        }
 
-preferred_data_fetch_args.key_len = args->key_len;
-preferred_data_fetch_args.key = args->key;
-preferred_data_fetch_args.replica_index = (uint8_t) args->replica_index;
+        preferred_data_fetch_args.key_len = args->key_len;
+        preferred_data_fetch_args.key = args->key;
+        preferred_data_fetch_args.replica_index = (uint8_t) args->replica_index;
 
 // Fetch the data segments for all those slots
 // No need of timing this out either, it will be handled by the general TIMEOUT_MSG. Retries would not likely help anyways
-SEOE(SCIStartDmaTransferVec,
-        replica_dma_queues[replica_index],
-        get_receive_segment[replica_index],
-        data_segments[replica_index],
-        slots_with_hash_count,
-        dma_vec,
-        preferred_data_fetch_completed_callback,
-&preferred_data_fetch_args,
-SCI_FLAG_USE_CALLBACK | SCI_FLAG_DMA_READ | SCI_FLAG_DMA_GLOBAL);
-} else {
-completed_fetches_of_index++;
-pthread_mutex_unlock(&completed_index_fetches_mutex);
+        SEOE(SCIStartDmaTransferVec,
+             replica_dma_queues[replica_index],
+             get_receive_segment[replica_index],
+             data_segments[replica_index],
+             slots_with_hash_count,
+             dma_vec,
+             preferred_data_fetch_completed_callback,
+             &preferred_data_fetch_args,
+             SCI_FLAG_USE_CALLBACK | SCI_FLAG_DMA_READ | SCI_FLAG_DMA_GLOBAL);
+    } else {
+        completed_fetches_of_index++;
+        pthread_mutex_unlock(&completed_index_fetches_mutex);
+    }
+
+    return SCI_CALLBACK_CONTINUE;
 }
 
-return SCI_CALLBACK_CONTINUE;
-}
+sci_callback_action_t
+preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sci_dma_queue_t _queue,
+                                        sci_error_t status) {
+    get_data_response_args_t *args = (get_data_response_args_t *) arg;
+    uint32_t tried_vnrs[INDEX_SLOTS_PR_BUCKET];
 
-sci_callback_action_t preferred_data_fetch_completed_callback(void IN *arg, sci_dma_queue_t queue, sci_error_t status) {
-get_data_response_args_t *args = (get_data_response_args_t *) arg;
-uint32_t tried_vnrs[INDEX_SLOTS_PR_BUCKET];
-
-if (status != SCI_ERR_OK) {
-contingency_backend_fetch(NULL, 0, args->key);
-return SCI_CALLBACK_CONTINUE;
-}
+    if (status != SCI_ERR_OK) {
+        contingency_backend_fetch(NULL, 0, args->key);
+        return SCI_CALLBACK_CONTINUE;
+    }
 
 // First figure out which of the slots has the correct key
-long version_number = -1;
-uint8_t correct_slot;
+    long version_number = -1;
+    uint8_t correct_slot;
 
-uint32_t tried_vnr_count = 0;
-char *data_slot = (char *) get_receive_data[args->replica_index];
-for (uint8_t slot = 0; slot < stored_index_data[args->replica_index].slots_length; slot++) {
-index_entry_t index_slot = stored_index_data[args->replica_index].slots[slot];
+    uint32_t tried_vnr_count = 0;
+    char *data_slot = (char *) get_receive_data[args->replica_index];
+    for (uint8_t slot = 0; slot < stored_index_data[args->replica_index].slots_length; slot++) {
+        index_entry_t index_slot = stored_index_data[args->replica_index].slots[slot];
 
-if (strncmp(args->key, data_slot, args->key_len) != 0) {
-tried_vnrs[tried_vnr_count++] = index_slot.version_number;
-data_slot += index_slot.key_length + index_slot.data_length;
-continue;
-}
+        if (strncmp(args->key, data_slot, args->key_len) != 0) {
+            tried_vnrs[tried_vnr_count++] = index_slot.version_number;
+            data_slot += index_slot.key_length + index_slot.data_length;
+            continue;
+        }
 
-version_number = index_slot.version_number;
-correct_slot = slot;
-break;
-}
+        version_number = index_slot.version_number;
+        correct_slot = slot;
+        break;
+    }
 
-if (version_number == -1) {
-contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key);
-return SCI_CALLBACK_CONTINUE;
-}
+    if (version_number == -1) {
+        contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key);
+        return SCI_CALLBACK_CONTINUE;
+    }
 
 // No need in timing out this, if we dont exit this loop, the quorum can not be gotten
-while(1) {
-pthread_mutex_lock(&completed_index_fetches_mutex);
-if (completed_fetches_of_index >= (REPLICA_COUNT + 1)/2) { pthread_mutex_unlock(&completed_index_fetches_mutex); break; }
-pthread_mutex_unlock(&completed_index_fetches_mutex);
+    while (1) {
+        pthread_mutex_lock(&completed_index_fetches_mutex);
+        if (completed_fetches_of_index >= (REPLICA_COUNT + 1) / 2) {
+            pthread_mutex_unlock(&completed_index_fetches_mutex);
+            break;
+        }
+        pthread_mutex_unlock(&completed_index_fetches_mutex);
+    }
+
+    uint8_t correct_vnr_count = 0;
+    for (uint8_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
+
+        if (!stored_index_data[replica_index].completed) continue;
+
+        for (uint8_t slot = 0; slot < stored_index_data[replica_index].slots_length; slot++) {
+            if (stored_index_data[replica_index].slots[slot].version_number == version_number) {
+                correct_vnr_count++;
+                break;
+            }
+        }
+    }
+
+    if (correct_vnr_count >= (REPLICA_COUNT + 1) / 2) {
+        pending_get_status.data_length = stored_index_data[args->replica_index].slots[correct_slot].data_length;
+
+        memcpy(pending_get_status.data, data_slot + args->key_len, pending_get_status.data_length);
+        pending_get_status.status = COMPLETED_SUCCESS;
+        pthread_mutex_unlock(&get_in_progress);
+    } else {
+        contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key);
+    }
+
+    return SCI_CALLBACK_CONTINUE;
 }
 
-uint8_t correct_vnr_count = 0;
-for (uint8_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
-
-if (!stored_index_data[replica_index].completed) continue;
-
-for (uint8_t slot = 0; slot < stored_index_data[replica_index].slots_length; slot++) {
-if (stored_index_data[replica_index].slots[slot].version_number == version_number) {
-correct_vnr_count++;
-break;
-}
-}
-}
-
-if (correct_vnr_count >= (REPLICA_COUNT + 1)/2) {
-pending_get_status.data_length = stored_index_data[args->replica_index].slots[correct_slot].data_length;
-
-memcpy(pending_get_status.data, data_slot + args->key_len, pending_get_status.data_length);
-pending_get_status.status = COMPLETED_SUCCESS;
-pthread_mutex_unlock(&get_in_progress);
-} else {
-contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key);
-}
-
-return SCI_CALLBACK_CONTINUE;
-}
-
-static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_tried_vnr_count, const char *key) {
+static void
+contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_tried_vnr_count, const char *key) {
     version_count_t version_count[REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET];
     uint32_t version_count_count = 0;
 
@@ -386,11 +393,13 @@ static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32
     clock_gettime(CLOCK_MONOTONIC, &ts_pre);
     clock_gettime(CLOCK_MONOTONIC, &ts);
 
-    while((ts.tv_sec - ts_pre.tv_sec) == 0 &&
-          (ts.tv_nsec = ts_pre.tv_nsec) < CONTINGENCY_WAIT_FOR_INDEX_FETCHES_TIMEOUT_NS) {
+    while ((ts.tv_sec - ts_pre.tv_sec) == 0 &&
+           (ts.tv_nsec = ts_pre.tv_nsec) < CONTINGENCY_WAIT_FOR_INDEX_FETCHES_TIMEOUT_NS) {
         pthread_mutex_lock(&completed_index_fetches_mutex);
-        if (completed_fetches_of_index == REPLICA_COUNT)
-        { pthread_mutex_unlock(&completed_index_fetches_mutex); break; }
+        if (completed_fetches_of_index == REPLICA_COUNT) {
+            pthread_mutex_unlock(&completed_index_fetches_mutex);
+            break;
+        }
         pthread_mutex_unlock(&completed_index_fetches_mutex);
         clock_gettime(CLOCK_MONOTONIC, &ts);
     }
@@ -424,7 +433,7 @@ static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32
     found_candidates_t found_candidates[REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET];
 
     for (uint32_t version_count_index = 0; version_count_index < version_count_count; version_count_index++) {
-        if (version_count[version_count_index].count >= (REPLICA_COUNT + 1)/2) {
+        if (version_count[version_count_index].count >= (REPLICA_COUNT + 1) / 2) {
             // Check if we have seen this version number before
             for (uint32_t i = 0; i < already_tried_vnr_count; i++) {
                 if (already_tried_vnr[i] == version_count[version_count_index].version_number)
@@ -501,65 +510,67 @@ static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32
     }
 }
 
-sci_callback_action_t contingency_data_fetch_completed_callback(void IN *arg, sci_dma_queue_t queue, sci_error_t status) {
-contingency_fetch_completed_args_t *args = (contingency_fetch_completed_args_t *) arg;
+sci_callback_action_t
+contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sci_dma_queue_t _queue,
+                                          sci_error_t status) {
+    contingency_fetch_completed_args_t *args = (contingency_fetch_completed_args_t *) arg;
 
-pthread_mutex_lock(&completed_contingency_fetches_mutex);
-completed_contingency_fetches[args->candidate_index] = true;
-pthread_mutex_unlock(&completed_contingency_fetches_mutex);
+    pthread_mutex_lock(&completed_contingency_fetches_mutex);
+    completed_contingency_fetches[args->candidate_index] = true;
+    pthread_mutex_unlock(&completed_contingency_fetches_mutex);
 
-if (status != SCI_ERR_OK) {
-pthread_mutex_lock(&completed_contingency_fetches_mutex);
+    if (status != SCI_ERR_OK) {
+        pthread_mutex_lock(&completed_contingency_fetches_mutex);
 
-uint32_t completed_contingency_fetches_count = 0;
-for (uint32_t candidate_index = 0; candidate_index < found_contingency_candidates_count; candidate_index++) {
-if (completed_contingency_fetches[candidate_index])
-completed_contingency_fetches_count++;
-}
+        uint32_t completed_contingency_fetches_count = 0;
+        for (uint32_t candidate_index = 0; candidate_index < found_contingency_candidates_count; candidate_index++) {
+            if (completed_contingency_fetches[candidate_index])
+                completed_contingency_fetches_count++;
+        }
 
-pthread_mutex_unlock(&completed_contingency_fetches_mutex);
+        pthread_mutex_unlock(&completed_contingency_fetches_mutex);
 
-if (completed_contingency_fetches_count == found_contingency_candidates_count) {
-fprintf(stderr, "not ok contingency fetch: %s\n", SCIGetErrorString(status));
-pending_get_status.data_length = 0;
-pending_get_status.data = 0;
-pending_get_status.status = COMPLETED_ERROR;
-pending_get_status.error_message = CONTINGENCY_ERROR_MSG;
-pthread_mutex_unlock(&get_in_progress);
-}
+        if (completed_contingency_fetches_count == found_contingency_candidates_count) {
+            fprintf(stderr, "not ok contingency fetch: %s\n", SCIGetErrorString(status));
+            pending_get_status.data_length = 0;
+            pending_get_status.data = 0;
+            pending_get_status.status = COMPLETED_ERROR;
+            pending_get_status.error_message = CONTINGENCY_ERROR_MSG;
+            pthread_mutex_unlock(&get_in_progress);
+        }
 
-return SCI_CALLBACK_CONTINUE;
-}
+        return SCI_CALLBACK_CONTINUE;
+    }
 
-char *slot = ((char *) get_receive_data[args->replica_index]) + args->offset;
+    char *slot = ((char *) get_receive_data[args->replica_index]) + args->offset;
 
-if (strncmp(slot, args->key, args->index_entry.key_length) == 0) {
+    if (strncmp(slot, args->key, args->index_entry.key_length) == 0) {
 // Match
-pending_get_status.data_length = args->index_entry.data_length;
+        pending_get_status.data_length = args->index_entry.data_length;
 
-memcpy(pending_get_status.data, slot + args->index_entry.key_length, pending_get_status.data_length);
-pending_get_status.status = COMPLETED_SUCCESS;
-pthread_mutex_unlock(&get_in_progress);
-} else {
+        memcpy(pending_get_status.data, slot + args->index_entry.key_length, pending_get_status.data_length);
+        pending_get_status.status = COMPLETED_SUCCESS;
+        pthread_mutex_unlock(&get_in_progress);
+    } else {
 // No match, if we have received all set error, if not just fall through and let another thread handle it
-pthread_mutex_lock(&completed_contingency_fetches_mutex);
+        pthread_mutex_lock(&completed_contingency_fetches_mutex);
 
-uint32_t completed_contingency_fetches_count = 0;
-for (uint32_t candidate_index = 0; candidate_index < found_contingency_candidates_count; candidate_index++) {
-if (completed_contingency_fetches[candidate_index])
-completed_contingency_fetches_count++;
-}
+        uint32_t completed_contingency_fetches_count = 0;
+        for (uint32_t candidate_index = 0; candidate_index < found_contingency_candidates_count; candidate_index++) {
+            if (completed_contingency_fetches[candidate_index])
+                completed_contingency_fetches_count++;
+        }
 
-pthread_mutex_unlock(&completed_contingency_fetches_mutex);
+        pthread_mutex_unlock(&completed_contingency_fetches_mutex);
 
-if (completed_contingency_fetches_count == found_contingency_candidates_count) {
-pending_get_status.data_length = 0;
-pending_get_status.data = 0;
-pending_get_status.status = COMPLETED_ERROR;
-pending_get_status.error_message = NO_DATA_MATCH_MSG;
-pthread_mutex_unlock(&get_in_progress);
-}
-}
+        if (completed_contingency_fetches_count == found_contingency_candidates_count) {
+            pending_get_status.data_length = 0;
+            pending_get_status.data = 0;
+            pending_get_status.status = COMPLETED_ERROR;
+            pending_get_status.error_message = NO_DATA_MATCH_MSG;
+            pthread_mutex_unlock(&get_in_progress);
+        }
+    }
 
-return SCI_CALLBACK_CONTINUE;
+    return SCI_CALLBACK_CONTINUE;
 }
