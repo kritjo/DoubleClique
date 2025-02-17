@@ -75,9 +75,7 @@ int main(int argc, char* argv[]) {
             fprintf(stderr, "String not convertable to uint8!\n");
             exit(EXIT_FAILURE);
         }
-
-        init_replica_data_index_region(sd, replica_index, (uint8_t) replica_node_id);
-
+        
         SEOE(SCICreateDMAQueue,
              sd,
              &replica_dma_queues[replica_index],
