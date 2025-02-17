@@ -26,10 +26,12 @@ static volatile put_request_region_t *put_request_region;
 static uint32_t free_header_slot = 0;
 static slot_metadata_t *slots[PUT_REQUEST_BUCKETS];
 
+static get_index_response_args_t get_index_args[REPLICA_COUNT];
 static pthread_mutex_t completed_index_fetches_mutex;
 static uint8_t completed_fetches_of_index = 0;
 static size_t completed_index_fetch_replica_index_order[REPLICA_COUNT];
 static stored_index_data_t stored_index_data[REPLICA_COUNT];
+static get_data_response_args_t preferred_data_fetch_args;
 
 
 // Only allow a single get at a time, the thing is that we want to use the DMA Callbacks, which means that we can not
@@ -40,6 +42,7 @@ static stored_index_data_t stored_index_data[REPLICA_COUNT];
 static pthread_mutex_t get_in_progress;
 static pending_get_status_t pending_get_status;
 
+static contingency_fetch_completed_args_t contingency_fetch_args[REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET];
 static pthread_mutex_t completed_contingency_fetches_mutex;
 static uint32_t found_contingency_candidates_count = 0;
 static bool completed_contingency_fetches[REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET];
@@ -81,7 +84,7 @@ int main(int argc, char* argv[]) {
              sd,
              &replica_dma_queues[replica_index],
              ADAPTER_NO,
-             1, //TODO: Check if maxEntries affects how much we can legally post to the queue, and how queue state is affected
+             INDEX_SLOTS_PR_BUCKET,
              NO_FLAGS);
 
 #define GetReceiveSegmentIdBase 42
@@ -187,12 +190,9 @@ static void put(const char *key, uint8_t key_len, void *value, uint32_t value_le
     if (block_for_completion) while (slot->status == SLOT_STATUS_PUT);
 }
 
-static get_index_response_args_t get_index_args[REPLICA_COUNT];
-
 // Always blocking semantics as we return the data, you need to free the data and return struct itself after use.
 // You need to free the data even though there is an error and data length is 0
 static get_return_t *get(const char *key, uint8_t key_len) {
-    // TODO: Check if having a larger dma queue would allow us to post more stuff at one time
     pthread_mutex_lock(&get_in_progress);
     pending_get_status.status = NOT_POSTED;
     pending_get_status.data_length = 0;
@@ -305,8 +305,6 @@ static get_return_t *get(const char *key, uint8_t key_len) {
 
     return return_struct;
 }
-
-static get_data_response_args_t preferred_data_fetch_args;
 
 sci_callback_action_t index_fetch_completed_callback(void IN *arg, sci_dma_queue_t queue, sci_error_t status) {
     get_index_response_args_t *args = ((get_index_response_args_t *) arg);
@@ -453,8 +451,6 @@ sci_callback_action_t preferred_data_fetch_completed_callback(void IN *arg, sci_
 
     return SCI_CALLBACK_CONTINUE;
 }
-
-static contingency_fetch_completed_args_t contingency_fetch_args[REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET];
 
 static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_tried_vnr_count, const char *key) {
     version_count_t version_count[REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET];
