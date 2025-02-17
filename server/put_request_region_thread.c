@@ -42,6 +42,9 @@ int put_request_region_poller(void *arg) {
     bool connected_to_client = false;
     sci_remote_data_interrupt_t ack_data_interrupt;
 
+    struct timespec start;
+    struct timespec end;
+
     //Enter main loop
     while (1) {
         if (put_request_segment->status == INACTIVE) {
@@ -57,6 +60,7 @@ int put_request_region_poller(void *arg) {
 
         // Wait for new transfer
         put_request_slot_preamble_t *slot_read = wait_for_new_put();
+        clock_gettime(CLOCK_MONOTONIC, &start);
 
         // TODO: We dont really need this, its just nice to have the key for debugging purposes, we could just have a pointer into the slot
         char *key = strndup(((char *) slot_read) + sizeof(put_request_slot_preamble_t), slot_read->key_length);
@@ -104,6 +108,9 @@ int put_request_region_poller(void *arg) {
                         slot_read->value_length,
                         slot_read->version_number);
 
+        clock_gettime(CLOCK_MONOTONIC, &end);
+
+        printf("on server took: %ld\n", end.tv_nsec - start.tv_nsec);
         send_ack(args->replica_number, ack_data_interrupt, put_request_segment->header_slots[current_head_slot]);
 
         put_request_segment->header_slots[current_head_slot] = 0; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
