@@ -99,7 +99,7 @@ void *put_ack_thread(__attribute__((unused)) void *_args) {
         put_ack_slot_t *put_ack_slot = &put_ack_slots[oldest_header_slot];
 
         // If we got a quorum of success acks, count as success
-        if (ack_success_count > (REPLICA_COUNT + 1) / 2) {
+        if (ack_success_count >= (REPLICA_COUNT + 1) / 2) {
             // Success!
             put_ack_slot->promise->result = PUT_RESULT_SUCCESS;
             put_ack_slot->metadata_slot->status = SLOT_STATUS_FREE;
