@@ -71,11 +71,19 @@ int main(int argc, char* argv[]) {
     put(key2, 5, sample_data2, sizeof(sample_data2), true);
     put(key, 4, sample_data, sizeof(sample_data), true);
 
-    get_return_t *return_struct1 = get_2_phase_read(key2, 5);
-    get_return_t *return_struct2 = get_2_phase_read(key, 4);
+    struct timespec start, end;
 
-    printf("At place 69 of get with data length %u: %u\n", return_struct1->data_length, ((unsigned char *) return_struct1->data)[69]);
-    printf("At place 69 of get with data_2 length %u: %u\n", return_struct2->data_length, ((unsigned char *) return_struct2->data)[69]);
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    get_return_t *return_struct1 = get_2_phase_read(key2, 5);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    printf("At place 69 of get with data length %u: %u. Took: %ld\n", return_struct1->data_length, ((unsigned char *) return_struct1->data)[69], end.tv_nsec - start.tv_nsec);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    get_return_t *return_struct2 = get_2_phase_read(key, 4);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    printf("At place 69 of get with data_2 length %u: %u. Took %ld\n", return_struct2->data_length, ((unsigned char *) return_struct2->data)[69], end.tv_nsec - start.tv_nsec);
 
     free(return_struct1->data);
     free(return_struct2->data);
