@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include "slots.h"
 
+// The key and value pointers must only be valid until this function returns
 slot_metadata_t *put_into_available_slot(slot_metadata_t **slots, const char *key, uint8_t key_len, void *value, uint32_t value_len) {
     slot_metadata_t *slot = find_available_slot(slots, key_len + value_len);
     if (slot == NULL) return NULL;

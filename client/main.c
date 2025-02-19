@@ -61,12 +61,6 @@ int main(int argc, char* argv[]) {
         sample_data[i] = i;
     }
 
-    unsigned char sample_data2[8];
-
-    for (unsigned char i = 0; i < 8; i++) {
-        sample_data2[i] = i/2;
-    }
-
     char key[] = "tall";
     char key2[] = "tall2";
 
@@ -75,27 +69,29 @@ int main(int argc, char* argv[]) {
     put_promise_t *promise;
 
     clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < 20000; i++) {
+    for (uint32_t i = 0; i < 200000; i++) {
         do {
             promise = put(key, 4, sample_data, sizeof(sample_data));
         } while (promise->result == PUT_NOT_POSTED);
 
         do {
-            promise = put(key2, 5, sample_data2, sizeof(sample_data2));
+            promise = put(key2, 5, &i, sizeof(i));
         } while (promise->result == PUT_NOT_POSTED);
+
     }
-    put(key, 4, sample_data, sizeof(sample_data));
+    promise = put(key, 4, sample_data, sizeof(sample_data));
 
     clock_gettime(CLOCK_MONOTONIC, &end);
 
-    printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec))/20001);
+    printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec))/200001);
 
-    clock_gettime(CLOCK_MONOTONIC, &start);
+    while (promise->result == PUT_NOT_POSTED || promise->result == PUT_PENDING);
+
     get_return_t *return_struct1 = get_2_phase_read(key2, 5);
     get_return_t *return_struct2 = get_2_phase_read(key, 4);
-    clock_gettime(CLOCK_MONOTONIC, &end);
 
-    printf("At place 69 of get with data_2 length %u: %u. Took %ld\n", return_struct2->data_length, ((unsigned char *) return_struct2->data)[69], end.tv_nsec - start.tv_nsec);
+    if (return_struct2->status == GET_RETURN_SUCCESS) printf("At place 7 of get with data_2 length %u: %u\n", return_struct2->data_length, ((unsigned char *) return_struct2->data)[7]);
+    if (return_struct1->status == GET_RETURN_SUCCESS) printf("At place 0 of get with data length %u: %u\n", return_struct1->data_length , *(uint32_t *) return_struct1->data);
 
     free(return_struct1->data);
     free(return_struct2->data);

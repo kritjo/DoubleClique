@@ -18,7 +18,7 @@ enum put_promise_status {
 };
 
 typedef struct {
-    enum put_promise_status result;
+    _Atomic enum put_promise_status result;
     uint32_t header_slot;
 } put_promise_t;
 
