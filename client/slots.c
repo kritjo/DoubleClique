@@ -4,11 +4,7 @@
 
 slot_metadata_t *put_into_available_slot(slot_metadata_t **slots, const char *key, uint8_t key_len, void *value, uint32_t value_len) {
     slot_metadata_t *slot = find_available_slot(slots, key_len + value_len);
-    if (slot == NULL) {
-        fprintf(stderr, "UNHANDLED no available slots!\n");
-        // TODO: handle this
-        exit(EXIT_FAILURE);
-    }
+    if (slot == NULL) return NULL;
     put_into_slot(slot, key, key_len, value, value_len);
     return slot;
 }

@@ -53,17 +53,17 @@ void init_put_ack(sci_desc_t sd) {
 // Critical region function
 put_promise_t *acquire_header_slot_blocking(slot_metadata_t *metadata_slot) {
     // Check if it is actually in-flight
-    while ((free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS == oldest_header_slot); // This complains but I think using atomics should work TODO: try removing volatile
+    // TODO: sched_yield optimize?
+    while ((free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS == oldest_header_slot) sched_yield(); // This complains but I think using atomics should work TODO: try removing volatile
 
 
     for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
         *(replica_ack + (free_header_slot * REPLICA_COUNT) + replica_index) = REPLICA_NOT_ACKED;
     }
 
-    uint32_t my_header_slot = free_header_slot++;
+    uint32_t my_header_slot = free_header_slot;
     put_ack_slot_t *put_ack_slot = &put_ack_slots[my_header_slot];
 
-    put_ack_slot->header_slot_index = my_header_slot;
     put_ack_slot->metadata_slot = metadata_slot;
     clock_gettime(CLOCK_MONOTONIC, &put_ack_slot->start_time);
 
@@ -76,6 +76,8 @@ put_promise_t *acquire_header_slot_blocking(slot_metadata_t *metadata_slot) {
     promise->header_slot = my_header_slot;
 
     put_ack_slot->promise = promise;
+
+    free_header_slot = (free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 
     return promise;
 }

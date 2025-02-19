@@ -9,6 +9,7 @@
 #define PUT_TIMEOUT_NS 100000000
 
 enum put_promise_status {
+    PUT_NOT_POSTED, // Retry
     PUT_PENDING,
     PUT_RESULT_SUCCESS,
     PUT_RESULT_ERROR_TIMEOUT,
@@ -24,7 +25,6 @@ typedef struct {
 typedef struct {
     struct timespec start_time;
     slot_metadata_t *metadata_slot;
-    uint32_t header_slot_index;
     put_promise_t *promise;
 } put_ack_slot_t;
 
