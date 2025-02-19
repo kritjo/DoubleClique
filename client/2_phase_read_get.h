@@ -41,7 +41,7 @@ enum get_status {
 };
 
 typedef struct {
-    enum get_status status;
+    _Atomic(enum get_status) status;
     uint32_t data_length;
     void *data;
     const char *error_message;
