@@ -18,16 +18,9 @@ static sci_desc_t sd;
 
 static volatile put_request_region_t *put_request_region;
 
-static uint32_t free_header_slot = 0;
 static slot_metadata_t *slots[PUT_REQUEST_BUCKETS];
 
-static void put(const char *key, uint8_t key_len, void *value, uint32_t value_len, bool block_for_completion);
-
-static enum replica_ack_type *replica_ack;
-static put_ack_slot_t put_ack_slots[MAX_PUT_REQUEST_SLOTS];
-
-static sci_local_segment_t put_ack_segment;
-static sci_map_t put_ack_map;
+static put_promise_t *put(const char *key, uint8_t key_len, void *value, uint32_t value_len, bool block_for_completion);
 
 int main(int argc, char* argv[]) {
     if (argc < REPLICA_COUNT + 1) {
@@ -40,41 +33,11 @@ int main(int argc, char* argv[]) {
     connect_to_put_request_region(sd, &put_request_region); //TODO: Reset some state if client reconnects?
     init_slots(slots, put_request_region);
 
-    sci_error_t sci_error;
-    SEOE(SCICreateSegment,
-         sd,
-         &put_ack_segment,
-         PUT_ACK_SEGMENT_ID,
-         MAX_PUT_REQUEST_SLOTS * sizeof(enum replica_ack_type) * REPLICA_COUNT,
-         NO_CALLBACK,
-         NO_ARG,
-         NO_FLAGS
-    );
+    init_put_ack(sd);
 
-    SEOE(SCIPrepareSegment,
-         put_ack_segment,
-         ADAPTER_NO,
-         NO_FLAGS);
-
-    SEOE(SCISetSegmentAvailable,
-         put_ack_segment,
-         ADAPTER_NO,
-         NO_FLAGS);
-
-    replica_ack = (enum replica_ack_type *) SCIMapLocalSegment(
-            put_ack_segment,
-            &put_ack_map,
-            NO_OFFSET,
-            MAX_PUT_REQUEST_SLOTS * sizeof(enum replica_ack_type) * REPLICA_COUNT,
-            NO_SUGGESTED_ADDRESS,
-            NO_FLAGS,
-            &sci_error);
-
-    if (sci_error != SCI_ERR_OK) {
-        fprintf(stderr, "Could not map local segment: %s\n", SCIGetErrorString(sci_error));
-        exit(EXIT_FAILURE);
-    }
-
+    pthread_t put_ack_thread_id;
+    pthread_create(&put_ack_thread_id, NULL, put_ack_thread, NULL);
+    
     uint8_t replica_node_ids[REPLICA_COUNT];
 
     for (uint8_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
@@ -138,7 +101,8 @@ int main(int argc, char* argv[]) {
     return EXIT_SUCCESS;
 }
 
-static void put(const char *key, uint8_t key_len, void *value, uint32_t value_len, bool block_for_completion) {
+// If not block_for completion, must free returned pointer
+static put_promise_t *put(const char *key, uint8_t key_len, void *value, uint32_t value_len, bool block_for_completion) {
     if (!block_for_completion) {
         fprintf(stderr, "NOT SUPPORTED!\n");
         exit(EXIT_FAILURE);
@@ -151,104 +115,50 @@ static void put(const char *key, uint8_t key_len, void *value, uint32_t value_le
     clock_gettime(CLOCK_MONOTONIC, &end);
     printf("on client took before shipping: %ld\n", end.tv_nsec - start.tv_nsec);
 
-    uint32_t my_header_slot = free_header_slot;
 
-    for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
-        *(replica_ack + (my_header_slot * REPLICA_COUNT) + replica_index) = REPLICA_NOT_ACKED;
+
+    if (slot->offset == 0) {
+        // TODO: fix so that this never happens
+        fprintf(stderr, "Grave error, this should not be able to happen, but it is.\n");
+        exit(EXIT_FAILURE);
     }
 
-    put_ack_slot_t *put_ack_slot = &put_ack_slots[my_header_slot];
-    clock_gettime(CLOCK_MONOTONIC, &put_ack_slot->start_time);
-    put_ack_slot->metadata_slot = slot;
-
-    put_request_region->header_slots[my_header_slot] = (size_t) slot->offset;
-    free_header_slot = (free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
+    put_promise_t *promise = acquire_header_slot_blocking(slot);
+    put_request_region->header_slots[promise->header_slot] = (size_t) slot->offset;
 
     // I have also tried pthread cond wait without success
     printf("blocking for c\n");
-    while (slot->status == SLOT_STATUS_PUT) {
-
-        uint32_t ack_success_count = 0;
-        uint32_t ack_count = 0;
-        for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
-            if (*(replica_ack + (my_header_slot * REPLICA_COUNT) + replica_index) != REPLICA_NOT_ACKED)
-                ack_count++;
-
-            if (*(replica_ack + (my_header_slot * REPLICA_COUNT) + replica_index) == REPLICA_ACK_SUCCESS)
-                ack_success_count++;
+    if (block_for_completion) {
+        while (promise->result == PUT_PENDING) sched_yield();
+        switch (promise->result) {
+            case PUT_RESULT_SUCCESS:
+                // Great success!
+                printf("success\n");
+                break;
+            case PUT_RESULT_ERROR_OUT_OF_SPACE:
+                printf("Put error: out of space\n");
+                break;
+            case PUT_RESULT_ERROR_MIX:
+                printf("Put error: multiple statuses/errors\n");
+                break;
+            case PUT_RESULT_ERROR_TIMEOUT:
+                printf("Put error: timeout\n");
+                break;
+            case PUT_PENDING:
+            default:
+                fprintf(stderr, "Illegal slot status!\n");
+                exit(EXIT_FAILURE);
         }
+        free(promise);
 
-        // If we got a quorum of success acks, count as success
-        if (ack_success_count > (REPLICA_COUNT + 1) / 2) {
-            // Success!
-            put_ack_slot->metadata_slot->status = SLOT_STATUS_SUCCESS;
-            continue;
-        }
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        printf("    before completion: %ld\n", end.tv_nsec - start.tv_nsec);
 
-        if (ack_count == REPLICA_COUNT) {
-            // Check what errors we have gotten
-            enum replica_ack_type replica_ack_type;
-            bool mix = false;
-            for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
-                if (replica_index == 0) {
-                    replica_ack_type = *(replica_ack + (my_header_slot * REPLICA_COUNT) + replica_index);
-                    continue;
-                }
-                if (*(replica_ack + (my_header_slot * REPLICA_COUNT) + replica_index) != replica_ack_type) {
-                    mix = true;
-                }
-            }
+        return NULL;
+    } else {
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        printf("    before completion: %ld\n", end.tv_nsec - start.tv_nsec);
 
-            if (mix) {
-                put_ack_slot->metadata_slot->status = SLOT_STATUS_ERROR_MIX;
-                continue;
-            }
-
-            switch (replica_ack_type) {
-                case REPLICA_ACK_ERROR_OUT_OF_SPACE:
-                    put_ack_slot->metadata_slot->status = SLOT_STATUS_ERROR_OUT_OF_SPACE;
-                case REPLICA_ACK_SUCCESS:
-                case REPLICA_NOT_ACKED:
-                default:
-                    fprintf(stderr, "Illegal REPLICA_ACK type!\n");
-                    exit(EXIT_FAILURE);
-            }
-        }
-
-        // If we do not have error replies and not a quorum, check for timeout
-        struct timespec end_p;
-        clock_gettime(CLOCK_MONOTONIC, &end_p);
-
-        if (end_p.tv_sec - put_ack_slot->start_time.tv_sec != 0 ||
-            end_p.tv_nsec - put_ack_slot->start_time.tv_nsec >= PUT_TIMEOUT_NS) {
-            put_ack_slot->metadata_slot->status = SLOT_STATUS_ERROR_TIMEOUT;
-        }
-
-        // Not timeout, let it live on!
+        return promise;
     }
-
-    switch (slot->status) {
-        case SLOT_STATUS_SUCCESS:
-            // Great success!
-            break;
-        case SLOT_STATUS_ERROR_OUT_OF_SPACE:
-            printf("Put error: out of space\n");
-            break;
-        case SLOT_STATUS_ERROR_MIX:
-            printf("Put error: multiple statuses/errors\n");
-            break;
-        case SLOT_STATUS_ERROR_TIMEOUT:
-            printf("Put error: timeout\n");
-            break;
-        case SLOT_STATUS_FREE:
-        case SLOT_STATUS_PUT:
-        default:
-            fprintf(stderr, "Illegal slot status!\n");
-            exit(EXIT_FAILURE);
-    }
-
-    put_ack_slots[my_header_slot].metadata_slot->status = SLOT_STATUS_FREE;
-
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    printf("    before completion: %ld\n", end.tv_nsec - start.tv_nsec);
 }

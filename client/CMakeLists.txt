@@ -7,7 +7,8 @@ add_executable(client
         slots.c
         2_phase_read_get.c
         2_phase_read_get.h
-        put_ack.h)
+        put_ack.h
+        put_ack.c)
 
 target_link_libraries(client PRIVATE commonLib)
 target_link_libraries(client PRIVATE SISCI)

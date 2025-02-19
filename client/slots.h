@@ -7,11 +7,7 @@
 
 typedef enum {
     SLOT_STATUS_FREE,
-    SLOT_STATUS_PUT,
-    SLOT_STATUS_SUCCESS,
-    SLOT_STATUS_ERROR_TIMEOUT,
-    SLOT_STATUS_ERROR_OUT_OF_SPACE,
-    SLOT_STATUS_ERROR_MIX // Means that not every ack was the same type
+    SLOT_STATUS_PUT
 } slot_status_t;
 
 struct slot_metadata {
