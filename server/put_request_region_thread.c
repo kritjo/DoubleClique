@@ -159,5 +159,5 @@ int put_request_region_poller(void *arg) {
 // replay attacks are impossible
 static void send_ack(uint8_t replica_index, volatile enum replica_ack_type *replica_ack, uint32_t header_slot, sci_sequence_t put_ack_sequence) {
     *(replica_ack + (header_slot * REPLICA_COUNT) + replica_index) = REPLICA_ACK_SUCCESS;
-    //SCIFlush(put_ack_sequence, NO_FLAGS);
+    SCIFlush(put_ack_sequence, NO_FLAGS);
 }
