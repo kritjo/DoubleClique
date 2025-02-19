@@ -71,24 +71,3 @@ size_t get_slot_no_from_offset(size_t offset, uint32_t bucket_no) {
     size_t slot_size = put_region_bucket_desc[bucket_no].slot_size;
     return (offset - bucket_offset) / (slot_size + sizeof(put_request_slot_preamble_t));
 }
-
-void connect_to_put_ack_data_interrupt(sci_desc_t sd, sci_remote_data_interrupt_t *ack_data_interrupt, uint32_t remote_id) {
-    SEOE(SCIConnectDataInterrupt,
-         sd,
-         ack_data_interrupt,
-         remote_id,
-         ADAPTER_NO,
-         ACK_DATA_INTERRUPT_NO,
-         SCI_INFINITE_TIMEOUT,
-         NO_FLAGS);
-}
-
-//TODO: Should probably transmit the version number to avoid replay attacks
-void send_ack(uint8_t replica_no, sci_remote_data_interrupt_t ack_data_interrupt, size_t offset_to_ack) {
-    put_ack_t put_ack;
-    put_ack.replica_no = replica_no;
-    put_ack.bucket_no = get_bucket_no_from_offset(offset_to_ack);
-    put_ack.slot_no = (uint32_t) get_slot_no_from_offset(offset_to_ack, put_ack.bucket_no);
-
-    SEOE(SCITriggerDataInterrupt, ack_data_interrupt, &put_ack, sizeof(put_ack), NO_FLAGS);
-}

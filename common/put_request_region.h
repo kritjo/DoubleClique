@@ -7,22 +7,19 @@
 #include <sisci_types.h>
 #include "sisci_glob_defs.h"
 
+#define PIPE_SIZE 20000 //bytes
+#define MAX_PUT_REQUEST_SLOTS (PIPE_SIZE/MIN_SIZE_ELEMENT)
+
 typedef enum {
     INACTIVE,
     ACTIVE
 } put_request_region_status_t;
 
-#define PIPE_SIZE 20000 //bytes
-
-#define MAX_PUT_REQUEST_SLOTS (PIPE_SIZE/MIN_SIZE_ELEMENT)
-
-#define ACK_DATA_INTERRUPT_NO 6
-
-typedef struct {
-    uint32_t replica_no;
-    uint32_t bucket_no;
-    uint32_t slot_no;
-} put_ack_t;
+enum replica_ack_type {
+    REPLICA_NOT_ACKED,
+    REPLICA_ACK_SUCCESS,
+    REPLICA_ACK_ERROR_OUT_OF_SPACE
+};
 
 /*
  * The structure of the request slot is as follows:
@@ -63,7 +60,5 @@ void init_bucket_desc(void);
 size_t get_slot_no_from_offset(size_t offset, uint32_t bucket_no);
 uint32_t get_bucket_no_from_offset(size_t offset);
 size_t put_region_size(void);
-void connect_to_put_ack_data_interrupt(sci_desc_t sd, sci_remote_data_interrupt_t *ack_data_interrupt, uint32_t remote_id);
-void send_ack(uint8_t replica_no, sci_remote_data_interrupt_t ack_data_interrupt, size_t offset_to_ack);
 
 #endif //DOUBLECLIQUE_PUT_REQUEST_REGION_H

@@ -14,10 +14,13 @@
 #define BUDDY_ALLOC_IMPLEMENTATION
 #include "buddy_alloc.h"
 #include "put_request_region_utils.h"
+#include "../client/put_ack.h"
 
 static put_request_region_t *put_request_segment;
 static uint32_t current_head_slot = 0;
 static struct buddy *buddy = NULL;
+
+static void send_ack(uint8_t number, volatile enum replica_ack_type *pType, uint32_t slot, sci_sequence_t put_ack_sequence);
 
 static inline put_request_slot_preamble_t *wait_for_new_put(void) {
     while (put_request_segment->header_slots[current_head_slot] == 0);
@@ -40,7 +43,12 @@ int put_request_region_poller(void *arg) {
     buddy = buddy_init(buddy_metadata, args->data_region, DATA_REGION_SIZE);
 
     bool connected_to_client = false;
-    sci_remote_data_interrupt_t ack_data_interrupt;
+
+    sci_remote_segment_t put_ack_segment;
+    sci_map_t put_ack_map;
+    volatile enum replica_ack_type *replica_ack;
+    sci_error_t sci_error;
+    sci_sequence_t put_ack_sequence;
 
     struct timespec start;
     struct timespec end;
@@ -54,7 +62,31 @@ int put_request_region_poller(void *arg) {
 
         // If this is the first time we are entering the loop, connect to the client
         if (!connected_to_client) {
-            connect_to_put_ack_data_interrupt(args->sd, &ack_data_interrupt, put_request_segment->sisci_node_id);
+            SEOE(SCIConnectSegment,
+                 args->sd,
+                 &put_ack_segment,
+                 put_request_segment->sisci_node_id,
+                 PUT_ACK_SEGMENT_ID,
+                 ADAPTER_NO,
+                 NO_CALLBACK,
+                 NO_ARG,
+                 SCI_INFINITE_TIMEOUT,
+                 NO_FLAGS);
+
+            replica_ack = (volatile enum replica_ack_type *) SCIMapRemoteSegment(
+                    put_ack_segment,
+                    &put_ack_map,
+                    NO_OFFSET,
+                    MAX_PUT_REQUEST_SLOTS * sizeof(enum replica_ack_type) * REPLICA_COUNT,
+                    NO_SUGGESTED_ADDRESS,
+                    NO_FLAGS,
+                    &sci_error);
+
+            SEOE(SCICreateMapSequence,
+                 put_ack_map,
+                 &put_ack_sequence,
+                 NO_FLAGS);
+
             connected_to_client = true;
         }
 
@@ -111,7 +143,8 @@ int put_request_region_poller(void *arg) {
         clock_gettime(CLOCK_MONOTONIC, &end);
 
         printf("on server took: %ld\n", end.tv_nsec - start.tv_nsec);
-        send_ack(args->replica_number, ack_data_interrupt, put_request_segment->header_slots[current_head_slot]);
+
+        send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence);
 
         put_request_segment->header_slots[current_head_slot] = 0; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
         current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
@@ -120,4 +153,11 @@ int put_request_region_poller(void *arg) {
     }
 
     return 0;
+}
+
+// TODO: should probably include the version number to avoid replay attacks, or ensure the timers are set up such that
+// replay attacks are impossible
+static void send_ack(uint8_t replica_index, volatile enum replica_ack_type *replica_ack, uint32_t header_slot, sci_sequence_t put_ack_sequence) {
+    *(replica_ack + (header_slot * REPLICA_COUNT) + replica_index) = REPLICA_ACK_SUCCESS;
+    //SCIFlush(put_ack_sequence, NO_FLAGS);
 }

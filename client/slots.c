@@ -7,6 +7,7 @@ slot_metadata_t *put_into_available_slot(slot_metadata_t **slots, const char *ke
     if (slot == NULL) {
         fprintf(stderr, "UNHANDLED no available slots!\n");
         // TODO: handle this
+        exit(EXIT_FAILURE);
     }
     put_into_slot(slot, key, key_len, value, value_len);
     return slot;
@@ -35,7 +36,6 @@ void init_slots(slot_metadata_t **slots, volatile put_request_region_t *put_requ
 
         for (uint32_t slot_index = 0; slot_index < slot_count; slot_index++) {
             size_t offset = slot_index * (slot_size + sizeof(put_request_slot_preamble_t));
-            slots[exp_index][slot_index].ack_count = 0;
             slots[exp_index][slot_index].status = SLOT_STATUS_FREE;
             slots[exp_index][slot_index].total_payload_size = (uint32_t) slot_size;
             slots[exp_index][slot_index].slot_preamble = (volatile put_request_slot_preamble_t *) (start_of_bucket + offset);

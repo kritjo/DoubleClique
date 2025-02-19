@@ -12,6 +12,7 @@
 #include "put_request_region_utils.h"
 #include "super_fast_hash.h"
 #include "2_phase_read_get.h"
+#include "put_ack.h"
 
 static sci_desc_t sd;
 
@@ -33,6 +34,7 @@ int main(int argc, char* argv[]) {
     init_bucket_desc();
     connect_to_put_request_region(sd, &put_request_region); //TODO: Reset some state if client reconnects?
     init_slots(slots, put_request_region);
+    init_put_ack_region(sd);
 
     uint8_t replica_node_ids[REPLICA_COUNT];
 
@@ -49,8 +51,13 @@ int main(int argc, char* argv[]) {
     }
 
     init_2_phase_read_get(sd, replica_node_ids);
-    create_put_ack_data_interrupt(sd, slots);
     put_request_region->status = ACTIVE;
+
+    pthread_t put_ack_thread_id;
+    if (pthread_create(&put_ack_thread_id, NULL, put_ack_thread_start, NULL) != 0) {
+        fprintf(stderr, "Error: Could not create thread\n");
+        exit(EXIT_FAILURE);
+    }
 
     unsigned char sample_data[128];
 
@@ -66,7 +73,6 @@ int main(int argc, char* argv[]) {
 
     char key[] = "tall";
     char key2[] = "tall2";
-
     put(key, 4, sample_data, sizeof(sample_data), true);
     put(key2, 5, sample_data2, sizeof(sample_data2), true);
     put(key, 4, sample_data, sizeof(sample_data), true);
@@ -100,6 +106,10 @@ int main(int argc, char* argv[]) {
 }
 
 static void put(const char *key, uint8_t key_len, void *value, uint32_t value_len, bool block_for_completion) {
+    if (!block_for_completion) {
+        fprintf(stderr, "NOT SUPPORTED!\n");
+        exit(EXIT_FAILURE);
+    }
     struct timespec start;
     struct timespec end;
 
@@ -108,11 +118,37 @@ static void put(const char *key, uint8_t key_len, void *value, uint32_t value_le
     clock_gettime(CLOCK_MONOTONIC, &end);
     printf("on client took before shipping: %ld\n", end.tv_nsec - start.tv_nsec);
 
-    put_request_region->header_slots[free_header_slot] = (size_t) slot->offset;
+    uint32_t my_header_slot = free_header_slot;
+    block_for_available(my_header_slot);
+    register_new_put(slot, my_header_slot, FEEDBACK_TYPE_SYNC);
+    put_request_region->header_slots[my_header_slot] = (size_t) slot->offset;
     free_header_slot = (free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 
     // I have also tried pthread cond wait without success
+    printf("blocking for c\n");
     if (block_for_completion) while (slot->status == SLOT_STATUS_PUT) sched_yield();
+
+    switch (slot->status) {
+        case SLOT_STATUS_SUCCESS:
+            // Great success!
+            break;
+        case SLOT_STATUS_ERROR_OUT_OF_SPACE:
+            printf("Put error: out of space\n");
+            break;
+        case SLOT_STATUS_ERROR_MIX:
+            printf("Put error: multiple statuses/errors\n");
+            break;
+        case SLOT_STATUS_ERROR_TIMEOUT:
+            printf("Put error: timeout\n");
+            break;
+        case SLOT_STATUS_FREE:
+        case SLOT_STATUS_PUT:
+        default:
+            fprintf(stderr, "Illegal slot status!\n");
+            exit(EXIT_FAILURE);
+    }
+
+    client_ack_self(my_header_slot);
 
     clock_gettime(CLOCK_MONOTONIC, &end);
     printf("    before completion: %ld\n", end.tv_nsec - start.tv_nsec);

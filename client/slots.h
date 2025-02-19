@@ -8,14 +8,17 @@
 typedef enum {
     SLOT_STATUS_FREE,
     SLOT_STATUS_PUT,
+    SLOT_STATUS_SUCCESS,
+    SLOT_STATUS_ERROR_TIMEOUT,
+    SLOT_STATUS_ERROR_OUT_OF_SPACE,
+    SLOT_STATUS_ERROR_MIX // Means that not every ack was the same type
 } slot_status_t;
 
 struct slot_metadata {
     volatile put_request_slot_preamble_t *slot_preamble;
     ptrdiff_t offset;
-    uint8_t ack_count;
     uint32_t total_payload_size; //TODO: really just a debug check field
-    slot_status_t status;
+    _Atomic slot_status_t status;
 };
 typedef struct slot_metadata slot_metadata_t;
 
