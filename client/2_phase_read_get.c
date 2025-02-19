@@ -301,7 +301,6 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
 
         // Fetch the data segments for all those slots
         // No need of timing this out either, it will be handled by the general TIMEOUT_MSG. Retries would not likely help anyways
-        printf("shipping dma transfer vec with %u length\n", slots_with_hash_count);
         SEOE(SCIStartDmaTransferVec,
              replica_dma_queues_main[replica_index],
              get_receive_segment[replica_index],
@@ -316,8 +315,6 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
         pthread_mutex_unlock(&completed_index_fetches_mutex);
     }
 
-    printf("index fetch completed for replica %zu\n", replica_index);
-
     return SCI_CALLBACK_CONTINUE;
 }
 
@@ -326,8 +323,6 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
                                         sci_error_t status) {
     get_data_response_args_t *args = (get_data_response_args_t *) arg;
     uint32_t tried_vnrs[INDEX_SLOTS_PR_BUCKET];
-
-    printf("Preferred data fetch completed\n");
 
     if (status != SCI_ERR_OK) {
         contingency_backend_fetch(NULL, 0, args->key);
@@ -388,9 +383,7 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
         memcpy(pending_get_status.data, data_slot + args->key_len, pending_get_status.data_length);
         pending_get_status.status = COMPLETED_SUCCESS;
 
-        printf("Got quorum, data length: %u\n", pending_get_status.data_length);
     } else {
-        printf("Contingency fetching\n");
         contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key);
     }
 
