@@ -13,7 +13,7 @@ static volatile _Atomic uint32_t free_data_offset = 0;
 static volatile _Atomic uint32_t oldest_data_offset = 0;
 
 // wraparound version_number, large enough to avoid replay attacks
-static volatile _Atomic uint32_t version_number;
+static volatile _Atomic uint32_t version_number = 0;
 
 static replica_ack_t *replica_ack;
 static put_ack_slot_t put_ack_slots[MAX_PUT_REQUEST_SLOTS];
@@ -24,6 +24,8 @@ static sci_map_t put_ack_map;
 static volatile put_request_region_t *put_request_region;
 
 static void connect_to_put_request_region(sci_desc_t sd);
+
+static uint8_t client_id;
 
 void init_put(sci_desc_t sd) {
     sci_error_t sci_error;
@@ -99,7 +101,8 @@ static void connect_to_put_request_region(sci_desc_t sd) {
         fprintf(stderr, "node_id too large!\n");
         exit(EXIT_FAILURE);
     }
-    put_request_region->sisci_node_id = (uint8_t) node_id;
+    client_id = (uint8_t) node_id;
+    put_request_region->sisci_node_id = client_id;
 
     for (uint32_t i = 0; i < MAX_PUT_REQUEST_SLOTS; i++) {
         put_request_region->header_slots[i].status = HEADER_SLOT_UNUSED;
@@ -132,7 +135,7 @@ put_promise_t *put_blocking_until_available_put_request_region_slot(const char *
     put_ack_slot->promise = promise;
     put_ack_slot->key_len = key_len;
     put_ack_slot->value_len = value_len;
-    put_ack_slot->version_number = version_number;
+    put_ack_slot->version_number = ((uint32_t) client_id) << 24 | version_number;
 
     free_header_slot = (free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 
@@ -164,8 +167,9 @@ put_promise_t *put_blocking_until_available_put_request_region_slot(const char *
     put_request_region->header_slots[my_header_slot].offset = (size_t) free_data_offset;
     put_request_region->header_slots[my_header_slot].key_length = key_len;
     put_request_region->header_slots[my_header_slot].value_length = value_len;
-    put_request_region->header_slots[my_header_slot].version_number = version_number;
-    version_number = (version_number + 1) % UINT32_MAX;
+    put_request_region->header_slots[my_header_slot].version_number = put_ack_slot->version_number;
+
+    version_number = (version_number + 1) % MAX_VERSION_NUMBER;
 
     uint32_t offset = free_data_offset;
     volatile char *data_region_start = ((volatile char *) put_request_region) + sizeof(put_request_region_t);

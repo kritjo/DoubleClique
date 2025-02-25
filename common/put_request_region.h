@@ -31,6 +31,9 @@ enum header_slot_status {
     HEADER_SLOT_USED
 };
 
+#define MAX_VERSION_NUMBER 0x1000000
+// The largest version number is 2**24 as the top 8 bits are used for the replica node id
+
 typedef struct {
     enum header_slot_status status;
     uint8_t key_length;
