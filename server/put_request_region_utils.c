@@ -17,7 +17,7 @@ void init_put_request_region(sci_desc_t sd, put_request_region_t **put_request_r
          sd,
          &put_request_segment_read,
          PUT_REQUEST_SEGMENT_ID,
-         put_region_size(),
+         PUT_REQUEST_REGION_SIZE,
          NO_CALLBACK,
          NO_ARG,
          SCI_FLAG_BROADCAST);
@@ -35,7 +35,7 @@ void init_put_request_region(sci_desc_t sd, put_request_region_t **put_request_r
     *put_request_region = SCIMapLocalSegment(put_request_segment_read,
                                                        &put_request_map_read,
                                                        NO_OFFSET,
-                                                       put_region_size(),
+                                             PUT_REQUEST_REGION_SIZE,
                                                        NO_SUGGESTED_ADDRESS,
                                                        NO_FLAGS,
                                                        &sci_error);

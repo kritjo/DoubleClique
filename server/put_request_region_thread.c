@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <sisci_api.h>
 #include <string.h>
+#include <sched.h>
 #include "put_request_region.h"
 #include "sisci_glob_defs.h"
 #include "super_fast_hash.h"
@@ -14,20 +15,13 @@
 #define BUDDY_ALLOC_IMPLEMENTATION
 #include "buddy_alloc.h"
 #include "put_request_region_utils.h"
-#include "../client/put_ack.h"
+#include "../client/put.h"
 
-static put_request_region_t *put_request_segment;
+static put_request_region_t *put_request_region;
 static uint32_t current_head_slot = 0;
 static struct buddy *buddy = NULL;
 
 static void send_ack(uint8_t number, volatile enum replica_ack_type *pType, uint32_t slot, sci_sequence_t put_ack_sequence);
-
-static inline put_request_slot_preamble_t *wait_for_new_put(void) {
-    while (put_request_segment->header_slots[current_head_slot] == 0);
-
-    size_t slot_offset = put_request_segment->header_slots[current_head_slot];
-    return (put_request_slot_preamble_t *) ((char *) put_request_segment + sizeof(put_request_region_t) + slot_offset);
-}
 
 static inline void *buddy_wrapper(size_t size) {
     return buddy_malloc(buddy, size);
@@ -35,8 +29,8 @@ static inline void *buddy_wrapper(size_t size) {
 
 int put_request_region_poller(void *arg) {
     put_request_region_poller_thread_args_t *args = (put_request_region_poller_thread_args_t *) arg;
-    init_put_request_region(args->sd, &put_request_segment);
-    put_request_segment->status = INACTIVE;
+    init_put_request_region(args->sd, &put_request_region);
+    put_request_region->status = PUT_REQUEST_REGION_INACTIVE;
 
     // Set up buddy allocator
     void *buddy_metadata = malloc(buddy_sizeof(DATA_REGION_SIZE));
@@ -53,9 +47,11 @@ int put_request_region_poller(void *arg) {
     struct timespec start;
     struct timespec end;
 
+    static int putc=0;
+
     //Enter main loop
     while (1) {
-        if (put_request_segment->status == INACTIVE) {
+        if (put_request_region->status == PUT_REQUEST_REGION_INACTIVE) {
             thrd_yield();
             continue;
         }
@@ -65,7 +61,7 @@ int put_request_region_poller(void *arg) {
             SEOE(SCIConnectSegment,
                  args->sd,
                  &put_ack_segment,
-                 put_request_segment->sisci_node_id,
+                 put_request_region->sisci_node_id,
                  PUT_ACK_SEGMENT_ID,
                  ADAPTER_NO,
                  NO_CALLBACK,
@@ -91,17 +87,21 @@ int put_request_region_poller(void *arg) {
         }
 
         // Wait for new transfer
-        put_request_slot_preamble_t *slot_read = wait_for_new_put();
+        header_slot_t *slot = &put_request_region->header_slots[current_head_slot];
+        while (slot->status != HEADER_SLOT_USED) sched_yield(); //TODO: possilby sched_wait();
+
+        char *data_slot_start = ((char *) put_request_region) + sizeof(put_request_region_t) + slot->offset;
+
         clock_gettime(CLOCK_MONOTONIC, &start);
 
         // TODO: We dont really need this, its just nice to have the key for debugging purposes, we could just have a pointer into the slot
-        char *key = strndup(((char *) slot_read) + sizeof(put_request_slot_preamble_t), slot_read->key_length);
+        char *key = strndup(data_slot_start, slot->key_length);
 
-        uint32_t key_hash = super_fast_hash((void *) key, slot_read->key_length);
-        void *data = (void *) ((char *) slot_read + sizeof(put_request_slot_preamble_t) + slot_read->key_length);
+        uint32_t key_hash = super_fast_hash((void *) key, slot->key_length);
+        void *data = (void *) (data_slot_start + slot->key_length);
 
         bool update;
-        index_entry_t *index_slot = existing_slot_for_key(args->index_region, args->data_region, key_hash, slot_read->key_length, key);
+        index_entry_t *index_slot = existing_slot_for_key(args->index_region, args->data_region, key_hash, slot->key_length, key);
 
         // If we did not find an existing slot, we are not updating, but fresh inserting
         if (index_slot == NULL) {
@@ -115,7 +115,7 @@ int put_request_region_poller(void *arg) {
                 //TODO: see line below
                 fprintf(stderr, "Did not find any available slots for request, should probably handle this somehow\n");
 
-                put_request_segment->header_slots[current_head_slot] = 0; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+                put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
                 current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 
                 continue;
@@ -127,25 +127,25 @@ int put_request_region_poller(void *arg) {
         data_entry_preamble_t *data_slot = find_data_slot_for_index_slot(args->data_region,
                                                                          index_slot,
                                                                          update,
-                                                                         slot_read->key_length + slot_read->value_length,
+                                                                         slot->key_length + slot->value_length,
                                                                          buddy_wrapper);
 
         insert_in_table(args->data_region,
                         index_slot,
                         data_slot,
                         key,
-                        slot_read->key_length,
+                        slot->key_length,
                         key_hash,
                         data,
-                        slot_read->value_length,
-                        slot_read->version_number);
+                        slot->value_length,
+                        slot->version_number);
 
         clock_gettime(CLOCK_MONOTONIC, &end);
 
 
         send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence);
 
-        put_request_segment->header_slots[current_head_slot] = 0; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+        put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
         current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 
         free(key);

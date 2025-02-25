@@ -11,8 +11,8 @@
 #define MAX_PUT_REQUEST_SLOTS (PIPE_SIZE/MIN_SIZE_ELEMENT)
 
 typedef enum {
-    INACTIVE,
-    ACTIVE
+    PUT_REQUEST_REGION_INACTIVE,
+    PUT_REQUEST_REGION_ACTIVE
 } put_request_region_status_t;
 
 enum replica_ack_type {
@@ -21,44 +21,26 @@ enum replica_ack_type {
     REPLICA_ACK_ERROR_OUT_OF_SPACE
 };
 
-/*
- * The structure of the request slot is as follows:
- * put_request_slot_preamble_t
- *
- */
+enum header_slot_status {
+    HEADER_SLOT_UNUSED,
+    HEADER_SLOT_USED
+};
+
 typedef struct {
-    uint8_t key_length; // NOT including null byte - just like strlen
+    enum header_slot_status status;
+    uint8_t key_length;
     uint32_t value_length;
     uint32_t version_number;
-} put_request_slot_preamble_t;
-
-typedef struct {
-    size_t slot_size;
-    size_t count;
     size_t offset;
-} slot_bucket_t;
-
-extern slot_bucket_t put_region_bucket_desc[PUT_REQUEST_BUCKETS];
-
-//Slot utils
-#define COMPUTE_SLOT_COUNT(slot_size) \
-    (((slot_size) >= ((PIPE_SIZE) / 2)) ? \
-     2 : \
-     (((PIPE_SIZE) + (slot_size) - 1) / (slot_size)))
-
-#define BUCKET_SIZE(slot_size) ((slot_size + sizeof(put_request_slot_preamble_t)) * COMPUTE_SLOT_COUNT(slot_size))
+} header_slot_t;
 
 typedef struct {
     uint8_t sisci_node_id; // Only valid when status != 0
-    size_t header_slots[MAX_PUT_REQUEST_SLOTS];
+    header_slot_t header_slots[MAX_PUT_REQUEST_SLOTS];
     put_request_region_status_t status;
 } put_request_region_t;
 
-size_t put_region_buckets_size(void);
-uint32_t total_slots(void);
-void init_bucket_desc(void);
-size_t get_slot_no_from_offset(size_t offset, uint32_t bucket_no);
-uint32_t get_bucket_no_from_offset(size_t offset);
-size_t put_region_size(void);
+#define PUT_REQUEST_REGION_DATA_SIZE 0x200000
+#define PUT_REQUEST_REGION_SIZE sizeof(put_request_region_t) + PUT_REQUEST_REGION_DATA_SIZE
 
 #endif //DOUBLECLIQUE_PUT_REQUEST_REGION_H
