@@ -24,7 +24,7 @@ typedef struct {
 
 typedef struct {
     struct timespec start_time;
-    volatile header_slot_t *header_slot;
+    volatile header_slot_t *header_slot_WRITE_ONLY;
     put_promise_t *promise;
     uint8_t key_len;
     uint32_t value_len;

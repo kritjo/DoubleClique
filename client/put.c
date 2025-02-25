@@ -119,7 +119,7 @@ put_promise_t *put_blocking(const char *key, uint8_t key_len, void *value, uint3
     uint32_t my_header_slot = free_header_slot;
     put_ack_slot_t *put_ack_slot = &put_ack_slots[my_header_slot];
 
-    put_ack_slot->header_slot = &put_request_region->header_slots[my_header_slot];
+    put_ack_slot->header_slot_WRITE_ONLY = &put_request_region->header_slots[my_header_slot];
 
     clock_gettime(CLOCK_MONOTONIC, &put_ack_slot->start_time);
 
@@ -251,7 +251,7 @@ void *put_ack_thread(__attribute__((unused)) void *_args) {
         continue;
 
         walk_to_next_slot:
-        put_ack_slot->header_slot->status = HEADER_SLOT_UNUSED;
+        put_ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_UNUSED;
         oldest_header_slot = (oldest_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
         oldest_data_offset = (oldest_data_offset + put_ack_slot->value_len + put_ack_slot->key_len) % PUT_REQUEST_REGION_DATA_SIZE;
     }
