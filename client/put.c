@@ -109,9 +109,7 @@ static void connect_to_put_request_region(sci_desc_t sd) {
 put_promise_t *put_blocking(const char *key, uint8_t key_len, void *value, uint32_t value_len) {
     // Check if it is actually in-flight
     // TODO: sched_yield optimize?
-    while ((free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS == oldest_header_slot) {
-
-    } // This complains but I think using atomics should work TODO: try removing volatile
+    while ((free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS == oldest_header_slot); // This complains but I think using atomics should work TODO: try removing volatile
 
 
     for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
@@ -134,6 +132,8 @@ put_promise_t *put_blocking(const char *key, uint8_t key_len, void *value, uint3
     promise->header_slot = my_header_slot;
 
     put_ack_slot->promise = promise;
+    put_ack_slot->key_len = key_len;
+    put_ack_slot->value_len = value_len;
 
     free_header_slot = (free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 
@@ -154,7 +154,6 @@ put_promise_t *put_blocking(const char *key, uint8_t key_len, void *value, uint3
             // There's enough space
             break;
         }
-        printf("Waiting for enough data space\n");
     }
 
     put_request_region->header_slots[my_header_slot].offset = (size_t) free_data_offset;
@@ -185,7 +184,6 @@ put_promise_t *put_blocking(const char *key, uint8_t key_len, void *value, uint3
 }
 
 void *put_ack_thread(__attribute__((unused)) void *_args) {
-    uint32_t times_we_got_all_acks = 0;
     while (1) {
         if (oldest_header_slot == free_header_slot) { continue; }
 
@@ -205,7 +203,6 @@ void *put_ack_thread(__attribute__((unused)) void *_args) {
         if (ack_success_count >= (REPLICA_COUNT + 1) / 2) {
             // Success!
             put_ack_slot->promise->result = PUT_RESULT_SUCCESS;
-            if (times_we_got_all_acks++ % 1000 == 0) printf("times_we_got_all_acks = %u\n", times_we_got_all_acks);
             goto walk_to_next_slot;
         }
 
@@ -256,7 +253,7 @@ void *put_ack_thread(__attribute__((unused)) void *_args) {
         walk_to_next_slot:
         put_ack_slot->header_slot->status = HEADER_SLOT_UNUSED;
         oldest_header_slot = (oldest_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
-        oldest_data_offset = (oldest_data_offset + put_ack_slot->header_slot->value_length + put_ack_slot->header_slot->key_length) % PUT_REQUEST_REGION_DATA_SIZE;
+        oldest_data_offset = (oldest_data_offset + put_ack_slot->value_len + put_ack_slot->key_len) % PUT_REQUEST_REGION_DATA_SIZE;
     }
 
     return NULL;

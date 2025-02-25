@@ -26,6 +26,8 @@ typedef struct {
     struct timespec start_time;
     volatile header_slot_t *header_slot;
     put_promise_t *promise;
+    uint8_t key_len;
+    uint32_t value_len;
 } put_ack_slot_t;
 
 void init_put(sci_desc_t sd);

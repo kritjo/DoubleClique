@@ -147,8 +147,6 @@ int put_request_region_poller(void *arg) {
         send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence);
         clock_gettime(CLOCK_MONOTONIC, &end);
 
-        printf("on server took: %ld\n", end.tv_nsec - start.tv_nsec);
-
         current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 
         free(key);
