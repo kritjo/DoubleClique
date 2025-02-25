@@ -8,7 +8,7 @@
 #include "sisci_glob_defs.h"
 
 #define PIPE_SIZE 20000 //bytes
-#define MAX_PUT_REQUEST_SLOTS (PIPE_SIZE/MIN_SIZE_ELEMENT)
+#define MAX_PUT_REQUEST_SLOTS 0x10000
 
 typedef enum {
     PUT_REQUEST_REGION_INACTIVE,

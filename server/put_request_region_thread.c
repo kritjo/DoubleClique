@@ -87,8 +87,9 @@ int put_request_region_poller(void *arg) {
         }
 
         // Wait for new transfer
-        header_slot_t *slot = &put_request_region->header_slots[current_head_slot];
-        while (slot->status != HEADER_SLOT_USED) sched_yield(); //TODO: possilby sched_wait();
+        while (put_request_region->header_slots[current_head_slot].status != HEADER_SLOT_USED) sched_yield(); //TODO: possilby sched_wait();
+        volatile header_slot_t *slot = &put_request_region->header_slots[current_head_slot];
+
 
         char *data_slot_start = ((char *) put_request_region) + sizeof(put_request_region_t) + slot->offset;
 
@@ -140,12 +141,14 @@ int put_request_region_poller(void *arg) {
                         slot->value_length,
                         slot->version_number);
 
-        clock_gettime(CLOCK_MONOTONIC, &end);
-
+        // Need to do this before sending ack in case of race
+        put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
 
         send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence);
+        clock_gettime(CLOCK_MONOTONIC, &end);
 
-        put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+        printf("on server took: %ld\n", end.tv_nsec - start.tv_nsec);
+
         current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 
         free(key);
