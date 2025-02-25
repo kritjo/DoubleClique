@@ -6,7 +6,7 @@
 #include "put_request_region.h"
 
 #define PUT_ACK_SEGMENT_ID 2
-#define PUT_TIMEOUT_NS 100000000
+#define PUT_TIMEOUT_NS 1000000000 //TODO: This should probably be a factor of queue length
 
 enum put_promise_status {
     PUT_NOT_POSTED, // Retry
@@ -19,7 +19,6 @@ enum put_promise_status {
 
 typedef struct {
     _Atomic enum put_promise_status result;
-    uint32_t header_slot;
 } put_promise_t;
 
 typedef struct {
@@ -28,10 +27,11 @@ typedef struct {
     put_promise_t *promise;
     uint8_t key_len;
     uint32_t value_len;
+    uint32_t version_number;
 } put_ack_slot_t;
 
 void init_put(sci_desc_t sd);
-put_promise_t *put_blocking(const char *key, uint8_t key_len, void *value, uint32_t value_len);
+put_promise_t *put_blocking_until_available_put_request_region_slot(const char *key, uint8_t key_len, void *value, uint32_t value_len);
 void *put_ack_thread(__attribute__((unused)) void *_args);
 
 #endif //DOUBLECLIQUE_PUT_H

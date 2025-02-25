@@ -67,7 +67,6 @@ int main(int argc, char* argv[]) {
         do {
             promise = put(key2, 5, &i, sizeof(i));
         } while (promise->result == PUT_NOT_POSTED);
-
     }
 
     promise = put(key, 4, sample_data, sizeof(sample_data));
@@ -100,6 +99,6 @@ int main(int argc, char* argv[]) {
 
 // Caller must free returned promise
 static put_promise_t *put(const char *key, uint8_t key_len, void *value, uint32_t value_len) {
-    put_promise_t *promise = put_blocking(key, key_len, value, value_len);
+    put_promise_t *promise = put_blocking_until_available_put_request_region_slot(key, key_len, value, value_len);
     return promise;
 }

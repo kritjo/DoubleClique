@@ -8,7 +8,7 @@
 #include "sisci_glob_defs.h"
 
 #define PIPE_SIZE 20000 //bytes
-#define MAX_PUT_REQUEST_SLOTS 0x10000
+#define MAX_PUT_REQUEST_SLOTS (PIPE_SIZE/MIN_SIZE_ELEMENT)
 
 typedef enum {
     PUT_REQUEST_REGION_INACTIVE,
@@ -20,6 +20,11 @@ enum replica_ack_type {
     REPLICA_ACK_SUCCESS,
     REPLICA_ACK_ERROR_OUT_OF_SPACE
 };
+
+typedef struct {
+    enum replica_ack_type replica_ack_type;
+    uint32_t version_number;
+} replica_ack_t;
 
 enum header_slot_status {
     HEADER_SLOT_UNUSED,

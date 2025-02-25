@@ -10,18 +10,19 @@
 #include "put_request_region.h"
 #include "sisci_glob_defs.h"
 #include "super_fast_hash.h"
-#include "index_data_protocol.h"
 
+#include "index_data_protocol.h"
 #define BUDDY_ALLOC_IMPLEMENTATION
 #include "buddy_alloc.h"
 #include "put_request_region_utils.h"
+
 #include "../client/put.h"
 
+
 static put_request_region_t *put_request_region;
-static uint32_t current_head_slot = 0;
 static struct buddy *buddy = NULL;
 
-static void send_ack(uint8_t number, volatile enum replica_ack_type *pType, uint32_t slot, sci_sequence_t put_ack_sequence);
+static void send_ack(uint8_t number, volatile replica_ack_t *pType, uint32_t slot, sci_sequence_t put_ack_sequence, uint32_t version_number, enum replica_ack_type ack_type);
 
 static inline void *buddy_wrapper(size_t size) {
     return buddy_malloc(buddy, size);
@@ -40,14 +41,12 @@ int put_request_region_poller(void *arg) {
 
     sci_remote_segment_t put_ack_segment;
     sci_map_t put_ack_map;
-    volatile enum replica_ack_type *replica_ack;
+    volatile replica_ack_t *replica_ack;
     sci_error_t sci_error;
     sci_sequence_t put_ack_sequence;
 
     struct timespec start;
     struct timespec end;
-
-    static int putc=0;
 
     //Enter main loop
     while (1) {
@@ -69,11 +68,11 @@ int put_request_region_poller(void *arg) {
                  SCI_INFINITE_TIMEOUT,
                  NO_FLAGS);
 
-            replica_ack = (volatile enum replica_ack_type *) SCIMapRemoteSegment(
+            replica_ack = (volatile replica_ack_t *) SCIMapRemoteSegment(
                     put_ack_segment,
                     &put_ack_map,
                     NO_OFFSET,
-                    MAX_PUT_REQUEST_SLOTS * sizeof(enum replica_ack_type) * REPLICA_COUNT,
+                    MAX_PUT_REQUEST_SLOTS * sizeof(replica_ack_t) * REPLICA_COUNT,
                     NO_SUGGESTED_ADDRESS,
                     NO_FLAGS,
                     &sci_error);
@@ -86,70 +85,73 @@ int put_request_region_poller(void *arg) {
             connected_to_client = true;
         }
 
-        // Wait for new transfer
-        while (put_request_region->header_slots[current_head_slot].status != HEADER_SLOT_USED) sched_yield(); //TODO: possilby sched_wait();
-        volatile header_slot_t *slot = &put_request_region->header_slots[current_head_slot];
+        /* It might seem like this will have a lot of overhead to constantly poll on every slot, it might add a little
+         * bit of overhead when just waiting for a single put, but when experiencing constant writing, it will implicitly
+         * sync up, as when we hit a slot that we actually need to do something with, the next in the loop will be ready
+         * when we continue;.
+         */
+        for (uint32_t current_head_slot = 0; current_head_slot < MAX_PUT_REQUEST_SLOTS; current_head_slot++) {
+            volatile header_slot_t *slot = &put_request_region->header_slots[current_head_slot];
+            if (slot->status != HEADER_SLOT_USED) continue;
 
+            char *data_slot_start = ((char *) put_request_region) + sizeof(put_request_region_t) + slot->offset;
 
-        char *data_slot_start = ((char *) put_request_region) + sizeof(put_request_region_t) + slot->offset;
+            clock_gettime(CLOCK_MONOTONIC, &start);
 
-        clock_gettime(CLOCK_MONOTONIC, &start);
+            // TODO: We dont really need this, its just nice to have the key for debugging purposes, we could just have a pointer into the slot
+            char *key = strndup(data_slot_start, slot->key_length);
 
-        // TODO: We dont really need this, its just nice to have the key for debugging purposes, we could just have a pointer into the slot
-        char *key = strndup(data_slot_start, slot->key_length);
+            uint32_t key_hash = super_fast_hash((void *) key, slot->key_length);
+            void *data = (void *) (data_slot_start + slot->key_length);
 
-        uint32_t key_hash = super_fast_hash((void *) key, slot->key_length);
-        void *data = (void *) (data_slot_start + slot->key_length);
+            bool update;
+            index_entry_t *index_slot = existing_slot_for_key(args->index_region, args->data_region, key_hash,
+                                                              slot->key_length, key);
 
-        bool update;
-        index_entry_t *index_slot = existing_slot_for_key(args->index_region, args->data_region, key_hash, slot->key_length, key);
-
-        // If we did not find an existing slot, we are not updating, but fresh inserting
-        if (index_slot == NULL) {
-            update = false;
-
-            // Try to find an available slot
-            index_slot = find_available_index_slot(args->index_region, key_hash);
-
-            // If we do not find one, there is no space left
+            // If we did not find an existing slot, we are not updating, but fresh inserting
             if (index_slot == NULL) {
-                //TODO: see line below
-                fprintf(stderr, "Did not find any available slots for request, should probably handle this somehow\n");
+                update = false;
 
-                put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
-                current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
+                // Try to find an available slot
+                index_slot = find_available_index_slot(args->index_region, key_hash);
 
-                continue;
+                // If we do not find one, there is no space left
+                if (index_slot == NULL) {
+                    send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence,
+                             slot->version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
+                    put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+                    current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
+                    continue;
+                }
+            } else {
+                update = true;
             }
-        } else {
-            update = true;
+
+            data_entry_preamble_t *data_slot = find_data_slot_for_index_slot(args->data_region,
+                                                                             index_slot,
+                                                                             update,
+                                                                             slot->key_length + slot->value_length,
+                                                                             buddy_wrapper);
+
+            insert_in_table(args->data_region,
+                            index_slot,
+                            data_slot,
+                            key,
+                            slot->key_length,
+                            key_hash,
+                            data,
+                            slot->value_length,
+                            slot->version_number);
+
+            // Need to do this before sending ack in case of race
+            put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+
+            send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence, slot->version_number,
+                     REPLICA_ACK_SUCCESS);
+            clock_gettime(CLOCK_MONOTONIC, &end);
+            current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
+            free(key);
         }
-
-        data_entry_preamble_t *data_slot = find_data_slot_for_index_slot(args->data_region,
-                                                                         index_slot,
-                                                                         update,
-                                                                         slot->key_length + slot->value_length,
-                                                                         buddy_wrapper);
-
-        insert_in_table(args->data_region,
-                        index_slot,
-                        data_slot,
-                        key,
-                        slot->key_length,
-                        key_hash,
-                        data,
-                        slot->value_length,
-                        slot->version_number);
-
-        // Need to do this before sending ack in case of race
-        put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
-
-        send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence);
-        clock_gettime(CLOCK_MONOTONIC, &end);
-
-        current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
-
-        free(key);
     }
 
     return 0;
@@ -157,7 +159,9 @@ int put_request_region_poller(void *arg) {
 
 // TODO: should probably include the version number to avoid replay attacks, or ensure the timers are set up such that
 // replay attacks are impossible
-static void send_ack(uint8_t replica_index, volatile enum replica_ack_type *replica_ack, uint32_t header_slot, sci_sequence_t put_ack_sequence) {
-    *(replica_ack + (header_slot * REPLICA_COUNT) + replica_index) = REPLICA_ACK_SUCCESS;
-    SCIFlush(put_ack_sequence, NO_FLAGS);
+static void send_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack, uint32_t header_slot, sci_sequence_t put_ack_sequence, uint32_t version_number, enum replica_ack_type ack_type) {
+    volatile replica_ack_t *replica_ack_instance = replica_ack + (header_slot * REPLICA_COUNT) + replica_index;
+    replica_ack_instance->version_number = version_number;
+    replica_ack_instance->replica_ack_type = ack_type;
+    SCIFlush(put_ack_sequence, NO_FLAGS); //TODO: is this needed?
 }

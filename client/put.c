@@ -12,7 +12,10 @@ static volatile _Atomic uint32_t oldest_header_slot = 0;
 static volatile _Atomic uint32_t free_data_offset = 0;
 static volatile _Atomic uint32_t oldest_data_offset = 0;
 
-static enum replica_ack_type *replica_ack;
+// wraparound version_number, large enough to avoid replay attacks
+static volatile _Atomic uint32_t version_number;
+
+static replica_ack_t *replica_ack;
 static put_ack_slot_t put_ack_slots[MAX_PUT_REQUEST_SLOTS];
 
 static sci_local_segment_t put_ack_segment;
@@ -28,7 +31,7 @@ void init_put(sci_desc_t sd) {
          sd,
          &put_ack_segment,
          PUT_ACK_SEGMENT_ID,
-         MAX_PUT_REQUEST_SLOTS * sizeof(enum replica_ack_type) * REPLICA_COUNT,
+         MAX_PUT_REQUEST_SLOTS * sizeof(replica_ack_t) * REPLICA_COUNT,
          NO_CALLBACK,
          NO_ARG,
          NO_FLAGS
@@ -44,11 +47,11 @@ void init_put(sci_desc_t sd) {
          ADAPTER_NO,
          NO_FLAGS);
 
-    replica_ack = (enum replica_ack_type *) SCIMapLocalSegment(
+    replica_ack = (replica_ack_t *) SCIMapLocalSegment(
             put_ack_segment,
             &put_ack_map,
             NO_OFFSET,
-            MAX_PUT_REQUEST_SLOTS * sizeof(enum replica_ack_type) * REPLICA_COUNT,
+            MAX_PUT_REQUEST_SLOTS * sizeof(replica_ack_t) * REPLICA_COUNT,
             NO_SUGGESTED_ADDRESS,
             NO_FLAGS,
             &sci_error);
@@ -106,15 +109,11 @@ static void connect_to_put_request_region(sci_desc_t sd) {
 }
 
 // Critical region function
-put_promise_t *put_blocking(const char *key, uint8_t key_len, void *value, uint32_t value_len) {
+put_promise_t *put_blocking_until_available_put_request_region_slot(const char *key, uint8_t key_len, void *value, uint32_t value_len) {
     // Check if it is actually in-flight
     // TODO: sched_yield optimize?
     while ((free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS == oldest_header_slot); // This complains but I think using atomics should work TODO: try removing volatile
 
-
-    for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
-        *(replica_ack + (free_header_slot * REPLICA_COUNT) + replica_index) = REPLICA_NOT_ACKED;
-    }
 
     uint32_t my_header_slot = free_header_slot;
     put_ack_slot_t *put_ack_slot = &put_ack_slots[my_header_slot];
@@ -129,11 +128,11 @@ put_promise_t *put_blocking(const char *key, uint8_t key_len, void *value, uint3
         exit(EXIT_FAILURE);
     }
     promise->result = PUT_PENDING;
-    promise->header_slot = my_header_slot;
 
     put_ack_slot->promise = promise;
     put_ack_slot->key_len = key_len;
     put_ack_slot->value_len = value_len;
+    put_ack_slot->version_number = version_number;
 
     free_header_slot = (free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 
@@ -156,10 +155,17 @@ put_promise_t *put_blocking(const char *key, uint8_t key_len, void *value, uint3
         }
     }
 
+    for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
+        replica_ack_t *replica_ack_instance = replica_ack + (free_header_slot * REPLICA_COUNT) + replica_index;
+        replica_ack_instance->replica_ack_type = REPLICA_NOT_ACKED;
+        replica_ack_instance->version_number = 0;
+    }
+
     put_request_region->header_slots[my_header_slot].offset = (size_t) free_data_offset;
     put_request_region->header_slots[my_header_slot].key_length = key_len;
     put_request_region->header_slots[my_header_slot].value_length = value_len;
-    put_request_region->header_slots[my_header_slot].version_number = 1; //TODO: compute vnr
+    put_request_region->header_slots[my_header_slot].version_number = version_number;
+    version_number = (version_number + 1) % UINT32_MAX;
 
     uint32_t offset = free_data_offset;
     volatile char *data_region_start = ((volatile char *) put_request_region) + sizeof(put_request_region_t);
@@ -187,17 +193,25 @@ void *put_ack_thread(__attribute__((unused)) void *_args) {
     while (1) {
         if (oldest_header_slot == free_header_slot) { continue; }
 
+        put_ack_slot_t *put_ack_slot = &put_ack_slots[oldest_header_slot];
+
         uint32_t ack_success_count = 0;
         uint32_t ack_count = 0;
         for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
-            if (*(replica_ack + (oldest_header_slot * REPLICA_COUNT) + replica_index) != REPLICA_NOT_ACKED)
+            replica_ack_t *replica_ack_instance = (replica_ack_t *) (replica_ack + (oldest_header_slot * REPLICA_COUNT) + replica_index);
+            enum replica_ack_type ack_type = replica_ack_instance->replica_ack_type;
+            uint32_t actual = replica_ack_instance->version_number;
+            uint32_t expected = put_ack_slot->version_number;
+
+            // If wrong version number, we do not count as ack
+            if (expected != actual) continue;
+
+            if (ack_type != REPLICA_NOT_ACKED)
                 ack_count++;
 
-            if (*(replica_ack + (oldest_header_slot * REPLICA_COUNT) + replica_index) == REPLICA_ACK_SUCCESS)
+            if (ack_type == REPLICA_ACK_SUCCESS)
                 ack_success_count++;
         }
-
-        put_ack_slot_t *put_ack_slot = &put_ack_slots[oldest_header_slot];
 
         // If we got a quorum of success acks, count as success
         if (ack_success_count >= (REPLICA_COUNT + 1) / 2) {
@@ -211,11 +225,13 @@ void *put_ack_thread(__attribute__((unused)) void *_args) {
             enum replica_ack_type replica_ack_type;
             bool mix = false;
             for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
+                replica_ack_t *replica_ack_instance = replica_ack + (oldest_header_slot * REPLICA_COUNT) + replica_index;
+
                 if (replica_index == 0) {
-                    replica_ack_type = *(replica_ack + (oldest_header_slot * REPLICA_COUNT) + replica_index);
+                    replica_ack_type = replica_ack_instance->replica_ack_type;
                     continue;
                 }
-                if (*(replica_ack + (oldest_header_slot * REPLICA_COUNT) + replica_index) != replica_ack_type) {
+                if (replica_ack_instance->replica_ack_type != replica_ack_type) {
                     mix = true;
                 }
             }
@@ -241,9 +257,9 @@ void *put_ack_thread(__attribute__((unused)) void *_args) {
         struct timespec end_p;
         clock_gettime(CLOCK_MONOTONIC, &end_p);
 
-        if (end_p.tv_sec - put_ack_slot->start_time.tv_sec != 0 ||
-            end_p.tv_nsec - put_ack_slot->start_time.tv_nsec >= PUT_TIMEOUT_NS) {
+        if (((end_p.tv_sec - put_ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - put_ack_slot->start_time.tv_nsec)) >= PUT_TIMEOUT_NS) {
             put_ack_slot->promise->result = PUT_RESULT_ERROR_TIMEOUT;
+            printf("TIMEOUT!\n");
             goto walk_to_next_slot;
         }
 

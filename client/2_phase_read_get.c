@@ -183,10 +183,9 @@ get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
 
     while (pending_get_status.status == POSTED) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
-        if ((ts.tv_sec - ts_pre.tv_sec) != 0 ||
-            (ts.tv_nsec - ts_pre.tv_nsec) > GET_TIMEOUT_NS) {
+        if (((ts.tv_sec - ts_pre.tv_sec) * 1000000000L + (ts.tv_nsec - ts_pre.tv_nsec)) > GET_TIMEOUT_NS) {
             // Timeout!
-            printf("TIMEOUT!\n");
+            printf("TIMEOUT GET!\n");
             for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
                 // Abort all pending DMA operations
                 SEOE(SCIAbortDMAQueue,
@@ -411,8 +410,7 @@ contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_t
     clock_gettime(CLOCK_MONOTONIC, &ts_pre);
     clock_gettime(CLOCK_MONOTONIC, &ts);
 
-    while ((ts.tv_sec - ts_pre.tv_sec) == 0 &&
-           (ts.tv_nsec = ts_pre.tv_nsec) < CONTINGENCY_WAIT_FOR_INDEX_FETCHES_TIMEOUT_NS) {
+    while (((ts.tv_sec - ts_pre.tv_sec) * 1000000000L + (ts.tv_nsec - ts_pre.tv_nsec)) < CONTINGENCY_WAIT_FOR_INDEX_FETCHES_TIMEOUT_NS) {
         pthread_mutex_lock(&completed_index_fetches_mutex);
         if (completed_fetches_of_index == REPLICA_COUNT) {
             pthread_mutex_unlock(&completed_index_fetches_mutex);
