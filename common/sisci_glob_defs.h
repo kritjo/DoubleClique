@@ -4,7 +4,7 @@
 #include "power_of_two.h"
 
 #define PUT_REQUEST_SEGMENT_ID 1
-#define REPLICA_COUNT 1
+#define REPLICA_COUNT 3
 
 #define MIN_SIZE_ELEMENT_EXP 3 // User needs to tune
 #define MIN_SIZE_ELEMENT (POWER_OF_TWO(MIN_SIZE_ELEMENT_EXP))
