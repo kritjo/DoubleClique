@@ -173,7 +173,7 @@ put_promise_t *put_blocking_until_available_put_request_region_slot(const char *
 
     version_number = (version_number + 1) % MAX_VERSION_NUMBER;
 
-    uint32_t offset = free_data_offset;
+    uint32_t starting_offset = free_data_offset;
     volatile char *data_region_start = ((volatile char *) put_request_region) + sizeof(put_request_region_t);
 
     char *hash_data = malloc(sizeof(uint32_t) * 2);
@@ -185,15 +185,15 @@ put_promise_t *put_blocking_until_available_put_request_region_slot(const char *
     uint32_t key_hash = super_fast_hash(key, key_len);
     // First copy the key
     for (uint32_t i = 0; i < key_len; i++) {
-        data_region_start[offset] = key[i];
-        offset = (offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
+        data_region_start[free_data_offset] = key[i];
+        free_data_offset = (free_data_offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
     }
 
     uint32_t value_hash = super_fast_hash(value, (int) value_len);
     // Next copy the data
     for (uint32_t i = 0; i < value_len; i++) {
-        data_region_start[offset] = ((char *) value)[i];
-        offset = (offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
+        data_region_start[free_data_offset] = ((char *) value)[i];
+        free_data_offset = (free_data_offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
     }
 
     // Copy key_hash into the first 4 bytes of hash_data
@@ -206,13 +206,12 @@ put_promise_t *put_blocking_until_available_put_request_region_slot(const char *
     free(hash_data);
 
     put_request_region->header_slots[my_header_slot].payload_hash = payload_hash;
-    put_request_region->header_slots[my_header_slot].offset = (size_t) free_data_offset;
+    put_request_region->header_slots[my_header_slot].offset = (size_t) starting_offset;
     put_request_region->header_slots[my_header_slot].key_length = key_len;
     put_request_region->header_slots[my_header_slot].value_length = value_len;
     put_request_region->header_slots[my_header_slot].version_number = put_ack_slot->version_number;
     put_request_region->header_slots[my_header_slot].status = HEADER_SLOT_USED;
 
-    free_data_offset = (free_data_offset + key_len + value_len) % PUT_REQUEST_REGION_DATA_SIZE;
     return promise;
 }
 

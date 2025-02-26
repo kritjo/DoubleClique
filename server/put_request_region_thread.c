@@ -94,21 +94,38 @@ int put_request_region_poller(void *arg) {
             header_slot_t slot = put_request_region->header_slots[current_head_slot];
             if (slot.status != HEADER_SLOT_USED) continue;
 
-            char *data_slot_start = ((char *) put_request_region) + sizeof(put_request_region_t) + slot.offset;
+            char *data_slot_start = ((char *) put_request_region) + sizeof(put_request_region_t);
+
+            size_t offset = slot.offset;
 
             clock_gettime(CLOCK_MONOTONIC, &start);
 
             // TODO: We dont really need this, its just nice to have the key for debugging purposes, we could just have a pointer into the slot
-            char *key = strndup(data_slot_start, slot.key_length);
+            char *key = malloc(slot.key_length + 1);
+            if (key == NULL) {
+                perror("malloc");
+                exit(EXIT_FAILURE);
+            }
+
+            for (uint32_t i = 0; i < slot.key_length; i++) {
+                key[i] = data_slot_start[offset];
+                offset = (offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
+            }
+            key[slot.key_length] = '\0';
 
             uint32_t key_hash = super_fast_hash((void *) key, slot.key_length);
-            void *data = malloc(slot.value_length);
+
+            char *data = malloc(slot.value_length);
             if (data == NULL) {
                 perror("malloc");
                 exit(EXIT_FAILURE);
             }
 
-            memcpy(data, (void *) (data_slot_start + slot.key_length), slot.value_length);
+            for (uint32_t i = 0; i < slot.value_length; i++) {
+                data[i] = data_slot_start[offset];
+                offset = (offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
+            }
+
             uint32_t value_hash = super_fast_hash(data, (int) slot.value_length);
 
             // TODO: This could be a function, shared with client
@@ -129,8 +146,6 @@ int put_request_region_poller(void *arg) {
 
             if (payload_hash != slot.payload_hash) {
                 // Torn read
-                printf("TORN! %s\n", key);
-                printf("i: %u\n", current_head_slot);
                 put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
                 continue;
             }

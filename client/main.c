@@ -58,14 +58,9 @@ int main(int argc, char* argv[]) {
     put_promise_t *promise;
 
     clock_gettime(CLOCK_MONOTONIC, &start);
-   for (uint32_t i = 0; i < 1000000; i++) {
-        do {
-            promise = put(key, 4, sample_data, sizeof(sample_data));
-        } while (promise->result == PUT_NOT_POSTED);
-
-        do {
-            promise = put(key2, 5, &i, sizeof(i));
-        } while (promise->result == PUT_NOT_POSTED);
+   for (uint32_t i = 0; i < 200000; i++) {
+            put(key, 4, sample_data, sizeof(sample_data));
+            put(key2, 5, &i, sizeof(i));
     }
 
     promise = put(key, 4, sample_data, sizeof(sample_data));
@@ -73,7 +68,7 @@ int main(int argc, char* argv[]) {
     while (promise->result == PUT_NOT_POSTED || promise->result == PUT_PENDING);
 
     clock_gettime(CLOCK_MONOTONIC, &end);
-    printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec))/1000001);
+    printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec))/400001);
     printf("Put result: %u\n", promise->result);
 
     get_return_t *return_struct1 = get_2_phase_read(key2, 5);
