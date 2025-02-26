@@ -1,10 +1,12 @@
 #include <sisci_api.h>
 #include <stdlib.h>
 #include <sched.h>
+#include <string.h>
 #include "put.h"
 #include "sisci_glob_defs.h"
 #include "put_request_region.h"
 #include "get_node_id.h"
+#include "super_fast_hash.h"
 
 static volatile _Atomic uint32_t free_header_slot = 0;
 static volatile _Atomic uint32_t oldest_header_slot = 0;
@@ -22,6 +24,7 @@ static sci_local_segment_t put_ack_segment;
 static sci_map_t put_ack_map;
 
 static volatile put_request_region_t *put_request_region;
+static sci_sequence_t put_request_sequence;
 
 static void connect_to_put_request_region(sci_desc_t sd);
 
@@ -108,6 +111,11 @@ static void connect_to_put_request_region(sci_desc_t sd) {
         put_request_region->header_slots[i].status = HEADER_SLOT_UNUSED;
     }
 
+    SEOE(SCICreateMapSequence,
+         put_request_map,
+         &put_request_sequence,
+         NO_FLAGS);
+
     put_request_region->status = PUT_REQUEST_REGION_ACTIVE;
 }
 
@@ -116,7 +124,6 @@ put_promise_t *put_blocking_until_available_put_request_region_slot(const char *
     // Check if it is actually in-flight
     // TODO: sched_yield optimize?
     while ((free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS == oldest_header_slot); // This complains but I think using atomics should work TODO: try removing volatile
-
 
     uint32_t my_header_slot = free_header_slot;
     put_ack_slot_t *put_ack_slot = &put_ack_slots[my_header_slot];
@@ -164,32 +171,48 @@ put_promise_t *put_blocking_until_available_put_request_region_slot(const char *
         replica_ack_instance->version_number = 0;
     }
 
-    put_request_region->header_slots[my_header_slot].offset = (size_t) free_data_offset;
-    put_request_region->header_slots[my_header_slot].key_length = key_len;
-    put_request_region->header_slots[my_header_slot].value_length = value_len;
-    put_request_region->header_slots[my_header_slot].version_number = put_ack_slot->version_number;
-
     version_number = (version_number + 1) % MAX_VERSION_NUMBER;
 
     uint32_t offset = free_data_offset;
     volatile char *data_region_start = ((volatile char *) put_request_region) + sizeof(put_request_region_t);
 
+    char *hash_data = malloc(sizeof(uint32_t) * 2);
+    if (hash_data == NULL) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+
+    uint32_t key_hash = super_fast_hash(key, key_len);
     // First copy the key
     for (uint32_t i = 0; i < key_len; i++) {
         data_region_start[offset] = key[i];
         offset = (offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
     }
 
+    uint32_t value_hash = super_fast_hash(value, (int) value_len);
     // Next copy the data
     for (uint32_t i = 0; i < value_len; i++) {
         data_region_start[offset] = ((char *) value)[i];
         offset = (offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
     }
 
-    free_data_offset = (free_data_offset + key_len + value_len) % PUT_REQUEST_REGION_DATA_SIZE;
+    // Copy key_hash into the first 4 bytes of hash_data
+    memcpy(hash_data, &key_hash, sizeof(uint32_t));
 
-    // Do not set until now, as we first want the replica to poll now!
+    // Copy value_hash into the next 4 bytes of hash_data
+    memcpy(hash_data + sizeof(uint32_t), &value_hash, sizeof(uint32_t));
+
+    uint32_t payload_hash = super_fast_hash(hash_data, sizeof(uint32_t) * 2);
+    free(hash_data);
+
+    put_request_region->header_slots[my_header_slot].payload_hash = payload_hash;
+    put_request_region->header_slots[my_header_slot].offset = (size_t) free_data_offset;
+    put_request_region->header_slots[my_header_slot].key_length = key_len;
+    put_request_region->header_slots[my_header_slot].value_length = value_len;
+    put_request_region->header_slots[my_header_slot].version_number = put_ack_slot->version_number;
     put_request_region->header_slots[my_header_slot].status = HEADER_SLOT_USED;
+
+    free_data_offset = (free_data_offset + key_len + value_len) % PUT_REQUEST_REGION_DATA_SIZE;
     return promise;
 }
 

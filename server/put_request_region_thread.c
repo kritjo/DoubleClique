@@ -91,22 +91,53 @@ int put_request_region_poller(void *arg) {
          * when we continue;.
          */
         for (uint32_t current_head_slot = 0; current_head_slot < MAX_PUT_REQUEST_SLOTS; current_head_slot++) {
-            volatile header_slot_t *slot = &put_request_region->header_slots[current_head_slot];
-            if (slot->status != HEADER_SLOT_USED) continue;
+            header_slot_t slot = put_request_region->header_slots[current_head_slot];
+            if (slot.status != HEADER_SLOT_USED) continue;
 
-            char *data_slot_start = ((char *) put_request_region) + sizeof(put_request_region_t) + slot->offset;
+            char *data_slot_start = ((char *) put_request_region) + sizeof(put_request_region_t) + slot.offset;
 
             clock_gettime(CLOCK_MONOTONIC, &start);
 
             // TODO: We dont really need this, its just nice to have the key for debugging purposes, we could just have a pointer into the slot
-            char *key = strndup(data_slot_start, slot->key_length);
+            char *key = strndup(data_slot_start, slot.key_length);
 
-            uint32_t key_hash = super_fast_hash((void *) key, slot->key_length);
-            void *data = (void *) (data_slot_start + slot->key_length);
+            uint32_t key_hash = super_fast_hash((void *) key, slot.key_length);
+            void *data = malloc(slot.value_length);
+            if (data == NULL) {
+                perror("malloc");
+                exit(EXIT_FAILURE);
+            }
+
+            memcpy(data, (void *) (data_slot_start + slot.key_length), slot.value_length);
+            uint32_t value_hash = super_fast_hash(data, (int) slot.value_length);
+
+            // TODO: This could be a function, shared with client
+            char *hash_data = malloc(sizeof(uint32_t) * 2);
+            if (hash_data == NULL) {
+                perror("malloc");
+                exit(EXIT_FAILURE);
+            }
+
+            // Copy key_hash into the first 4 bytes of hash_data
+            memcpy(hash_data, &key_hash, sizeof(uint32_t));
+
+            // Copy value_hash into the next 4 bytes of hash_data
+            memcpy(hash_data + sizeof(uint32_t), &value_hash, sizeof(uint32_t));
+
+            uint32_t payload_hash = super_fast_hash(hash_data, sizeof(uint32_t) * 2);
+            free(hash_data);
+
+            if (payload_hash != slot.payload_hash) {
+                // Torn read
+                printf("TORN! %s\n", key);
+                printf("i: %u\n", current_head_slot);
+                put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+                continue;
+            }
 
             bool update;
             index_entry_t *index_slot = existing_slot_for_key(args->index_region, args->data_region, key_hash,
-                                                              slot->key_length, key);
+                                                              slot.key_length, key);
 
             // If we did not find an existing slot, we are not updating, but fresh inserting
             if (index_slot == NULL) {
@@ -118,9 +149,8 @@ int put_request_region_poller(void *arg) {
                 // If we do not find one, there is no space left
                 if (index_slot == NULL) {
                     send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence,
-                             slot->version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
+                             slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
                     put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
-                    current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
                     continue;
                 }
             } else {
@@ -130,26 +160,26 @@ int put_request_region_poller(void *arg) {
             data_entry_preamble_t *data_slot = find_data_slot_for_index_slot(args->data_region,
                                                                              index_slot,
                                                                              update,
-                                                                             slot->key_length + slot->value_length,
+                                                                             slot.key_length + slot.value_length,
                                                                              buddy_wrapper);
 
             insert_in_table(args->data_region,
                             index_slot,
                             data_slot,
                             key,
-                            slot->key_length,
+                            slot.key_length,
                             key_hash,
                             data,
-                            slot->value_length,
-                            slot->version_number);
+                            slot.value_length,
+                            slot.version_number);
+            free(data);
 
             // Need to do this before sending ack in case of race
             put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
 
-            send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence, slot->version_number,
+            send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence, slot.version_number,
                      REPLICA_ACK_SUCCESS);
             clock_gettime(CLOCK_MONOTONIC, &end);
-            current_head_slot = (current_head_slot + 1) % MAX_PUT_REQUEST_SLOTS;
             free(key);
         }
     }
