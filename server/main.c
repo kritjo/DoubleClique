@@ -31,8 +31,8 @@ int main(int argc, char* argv[]) {
     SEOE(SCIInitialize, NO_FLAGS);
     SEOE(SCIOpen, &sd, NO_FLAGS);
 
-    create_plain_segment_and_set_available(sd, &index_segment, INDEX_REGION_SIZE, replica_index_segment_id[replica_id]);
-    create_plain_segment_and_set_available(sd, &data_segment, DATA_REGION_SIZE, replica_data_segment_id[replica_id]);
+    create_plain_segment_and_set_available(sd, &index_segment, INDEX_REGION_SIZE, REPLICA_INDEX_SEGMENT_ID(replica_id));
+    create_plain_segment_and_set_available(sd, &data_segment, DATA_REGION_SIZE, REPLICA_DATA_SEGMENT_ID(replica_id));
 
     index = SCIMapLocalSegment(index_segment, &index_map, NO_OFFSET, INDEX_REGION_SIZE, NO_SUGGESTED_ADDRESS, NO_FLAGS, &sci_error);
     if (sci_error != SCI_ERR_OK) {

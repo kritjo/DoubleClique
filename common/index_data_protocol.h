@@ -10,6 +10,11 @@
 #define INDEX_SLOTS_PR_BUCKET 4
 #define INDEX_BUCKETS (INDEX_SLOTS_COUNT/INDEX_SLOTS_PR_BUCKET)
 
+#define REPLICA_COUNT 3
+#define REPLICA_INDEX_SEGMENT_ID(index) (100 + index)
+#define REPLICA_DATA_SEGMENT_ID(index) (200 + index)
+
+
 #define DATA_REGION_SIZE 0x400000
 
 typedef struct {

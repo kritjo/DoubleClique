@@ -7,6 +7,7 @@
 #include "put_request_region.h"
 #include "get_node_id.h"
 #include "super_fast_hash.h"
+#include "index_data_protocol.h"
 
 static volatile _Atomic uint32_t free_header_slot = 0;
 static volatile _Atomic uint32_t oldest_header_slot = 0;
