@@ -15,7 +15,7 @@ static sci_desc_t sd;
 
 static put_promise_t *put(const char *key, uint8_t key_len, void *value, uint32_t value_len);
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
     if (argc < REPLICA_COUNT + 1) {
         fprintf(stderr, "Usage: %s replica_id[0] ... replica_id[n]\n", argv[0]);
     }
@@ -42,7 +42,7 @@ int main(int argc, char* argv[]) {
         replica_node_ids[replica_index] = (uint8_t) replica_node_id;
     }
 
-    init_2_phase_read_get(sd, replica_node_ids);
+    init_2_phase_read_get(sd, replica_node_ids, false);
 
     unsigned char sample_data[8];
 
@@ -56,11 +56,10 @@ int main(int argc, char* argv[]) {
     struct timespec start, end;
 
     put_promise_t *promise;
-
     clock_gettime(CLOCK_MONOTONIC, &start);
-   for (uint32_t i = 0; i < 200000; i++) {
-            put(key, 4, sample_data, sizeof(sample_data));
-            put(key2, 5, &i, sizeof(i));
+    for (uint32_t i = 0; i < 200000; i++) {
+        put(key, 4, sample_data, sizeof(sample_data));
+        put(key2, 5, &i, sizeof(i));
     }
 
     promise = put(key, 4, sample_data, sizeof(sample_data));
@@ -68,7 +67,7 @@ int main(int argc, char* argv[]) {
     while (promise->result == PUT_NOT_POSTED || promise->result == PUT_PENDING);
 
     clock_gettime(CLOCK_MONOTONIC, &end);
-    printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec))/400001);
+    printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / 400001);
     printf("Put result: %u\n", promise->result);
 
     get_return_t *return_struct1 = get_2_phase_read(key2, 5);
@@ -82,8 +81,22 @@ int main(int argc, char* argv[]) {
     free(return_struct1);
     free(return_struct2);
 
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (uint32_t i = 0; i < 20; i++) {
+        return_struct1 = get_2_phase_read(key2, 5);
+        return_struct2 = get_2_phase_read(key, 4);
+
+        free(return_struct1->data);
+        free(return_struct2->data);
+        free(return_struct1);
+        free(return_struct2);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / 20);
+
+    while (1);
+
     // TODO: How to free the slots in buddy and in general
-    while(1);
 
     SEOE(SCIClose, sd, NO_FLAGS);
     SCITerminate();

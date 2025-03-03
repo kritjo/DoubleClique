@@ -18,6 +18,7 @@ typedef struct {
     uint32_t key_hash;
     uint8_t key_len;
     const char *key;
+    size_t offset;
 } get_index_response_args_t;
 
 typedef struct {
@@ -25,6 +26,7 @@ typedef struct {
     uint32_t data_len;
     const char *key;
     uint8_t replica_index;
+    uint32_t key_hash;
 } get_data_response_args_t;
 
 typedef struct {
@@ -35,7 +37,7 @@ typedef struct {
 
 enum get_status {
     NOT_POSTED,
-    POSTED,
+    POSTED, // Meaning that the request has been sent to ALL replicas
     COMPLETED_SUCCESS,
     COMPLETED_ERROR
 };
@@ -45,6 +47,7 @@ typedef struct {
     uint32_t data_length;
     void *data;
     const char *error_message;
+    _Atomic bool contingency_fetch_started;
 } pending_get_status_t;
 
 enum get_return_status {
@@ -76,16 +79,18 @@ typedef struct {
     uint32_t offset;
     index_entry_t index_entry;
     const char *key;
+    uint32_t found_contingency_candidates_count;
 } contingency_fetch_completed_args_t;
 
 
-void init_2_phase_read_get(sci_desc_t sd, uint8_t *replica_node_ids);
+void init_2_phase_read_get(sci_desc_t sd, uint8_t *replica_node_ids, bool use_dma_);
 get_return_t *get_2_phase_read(const char *key, uint8_t key_len);
 
 static sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__((unused)) sci_dma_queue_t queue, sci_error_t status);
 static sci_callback_action_t preferred_data_fetch_completed_callback(void IN *arg,
                                                                      __attribute__((unused)) sci_dma_queue_t queue, sci_error_t status);
-static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_tried_vnr_count, const char *key);
+static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_tried_vnr_count, const char *key,
+                                      uint32_t key_hash, uint32_t key_length);
 static sci_callback_action_t contingency_data_fetch_completed_callback(void IN *arg,
                                                                        __attribute__((unused)) sci_dma_queue_t queue, sci_error_t status);
 
