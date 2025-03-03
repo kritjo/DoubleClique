@@ -12,17 +12,17 @@
 #include "super_fast_hash.h"
 
 #include "index_data_protocol.h"
+
 #define BUDDY_ALLOC_IMPLEMENTATION
+
 #include "buddy_alloc.h"
 #include "put_request_region_utils.h"
-
-#include "../client/put.h"
-
 
 static put_request_region_t *put_request_region;
 static struct buddy *buddy = NULL;
 
-static void send_ack(uint8_t number, volatile replica_ack_t *pType, uint32_t slot, sci_sequence_t put_ack_sequence, uint32_t version_number, enum replica_ack_type ack_type);
+static void send_ack(uint8_t number, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t slot, sci_sequence_t put_ack_sequence,
+                     uint32_t version_number, enum replica_ack_type ack_type);
 
 static inline void *buddy_wrapper(size_t size) {
     return buddy_malloc(buddy, size);
@@ -202,10 +202,9 @@ int put_request_region_poller(void *arg) {
     return 0;
 }
 
-// TODO: should probably include the version number to avoid replay attacks, or ensure the timers are set up such that
-// replay attacks are impossible
-static void send_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack, uint32_t header_slot, sci_sequence_t put_ack_sequence, uint32_t version_number, enum replica_ack_type ack_type) {
-    volatile replica_ack_t *replica_ack_instance = replica_ack + (header_slot * REPLICA_COUNT) + replica_index;
+static void send_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
+                     sci_sequence_t put_ack_sequence, uint32_t version_number, enum replica_ack_type ack_type) {
+    volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
     replica_ack_instance->version_number = version_number;
     replica_ack_instance->replica_ack_type = ack_type;
     SCIFlush(put_ack_sequence, NO_FLAGS); //TODO: is this needed?

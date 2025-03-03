@@ -5,7 +5,6 @@
 #include "sisci_glob_defs.h"
 #include "put_request_region.h"
 
-#define PUT_ACK_SEGMENT_ID 2
 #define PUT_TIMEOUT_NS 1000000000 //TODO: This should probably be a factor of queue length
 
 enum put_promise_status {

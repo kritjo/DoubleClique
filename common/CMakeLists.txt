@@ -5,7 +5,6 @@ add_library(commonLib STATIC
         buddy_alloc.h
         linked_list.c
         linked_list.h
-        put_request_region.c
         put_request_region.h
         index_data_protocol.h
         get_node_id.c

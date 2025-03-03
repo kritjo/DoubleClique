@@ -52,5 +52,6 @@ typedef struct {
 
 #define PUT_REQUEST_REGION_DATA_SIZE 2017136
 #define PUT_REQUEST_REGION_SIZE sizeof(put_request_region_t) + PUT_REQUEST_REGION_DATA_SIZE
+#define PUT_ACK_SEGMENT_ID 2
 
 #endif //DOUBLECLIQUE_PUT_REQUEST_REGION_H
