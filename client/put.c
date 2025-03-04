@@ -211,7 +211,7 @@ put_promise_t *put_blocking_until_available_put_request_region_slot(const char *
     put_request_region->header_slots[my_header_slot].key_length = key_len;
     put_request_region->header_slots[my_header_slot].value_length = value_len;
     put_request_region->header_slots[my_header_slot].version_number = put_ack_slot->version_number;
-    put_request_region->header_slots[my_header_slot].status = HEADER_SLOT_USED;
+    put_request_region->header_slots[my_header_slot].status = HEADER_SLOT_USED_PUT;
 
     return promise;
 }

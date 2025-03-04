@@ -29,7 +29,8 @@ typedef struct {
 
 enum header_slot_status {
     HEADER_SLOT_UNUSED,
-    HEADER_SLOT_USED
+    HEADER_SLOT_USED_PUT,
+    HEADER_SLOT_USED_GET
 };
 
 #define MAX_VERSION_NUMBER 0x1000000

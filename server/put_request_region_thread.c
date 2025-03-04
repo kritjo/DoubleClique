@@ -6,7 +6,6 @@
 #include <stdbool.h>
 #include <sisci_api.h>
 #include <string.h>
-#include <sched.h>
 #include "put_request_region.h"
 #include "sisci_glob_defs.h"
 #include "super_fast_hash.h"
@@ -21,11 +20,99 @@
 static put_request_region_t *put_request_region;
 static struct buddy *buddy = NULL;
 
-static void send_ack(uint8_t number, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t slot, sci_sequence_t put_ack_sequence,
-                     uint32_t version_number, enum replica_ack_type ack_type);
+static void send_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
+                     sci_sequence_t put_ack_sequence, uint32_t version_number, enum replica_ack_type ack_type);
 
 static inline void *buddy_wrapper(size_t size) {
     return buddy_malloc(buddy, size);
+}
+
+void put(put_request_region_poller_thread_args_t *args, header_slot_t slot, uint32_t current_head_slot,
+                volatile replica_ack_t *replica_ack, uint32_t key_hash, char *key, sci_sequence_t put_ack_sequence,
+                size_t offset) {
+    char *data_slot_start = ((char *) put_request_region) + sizeof(put_request_region_t);
+
+    char *data = malloc(slot.value_length);
+    if (data == NULL) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+
+    for (uint32_t i = 0; i < slot.value_length; i++) {
+        data[i] = data_slot_start[offset];
+        offset = (offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
+    }
+
+    uint32_t value_hash = super_fast_hash(data, (int) slot.value_length);
+
+    // TODO: This could be a function, shared with client
+    char *hash_data = malloc(sizeof(uint32_t) * 2);
+    if (hash_data == NULL) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+
+    // Copy key_hash into the first 4 bytes of hash_data
+    memcpy(hash_data, &key_hash, sizeof(uint32_t));
+
+    // Copy value_hash into the next 4 bytes of hash_data
+    memcpy(hash_data + sizeof(uint32_t), &value_hash, sizeof(uint32_t));
+
+    uint32_t payload_hash = super_fast_hash(hash_data, sizeof(uint32_t) * 2);
+    free(hash_data);
+
+    if (payload_hash != slot.payload_hash) {
+        // Torn read
+        put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+        free(data);
+        return;
+    }
+
+    bool update;
+    index_entry_t *index_slot = existing_slot_for_key(args->index_region, args->data_region, key_hash,
+                                                      slot.key_length, key);
+
+    // If we did not find an existing slot, we are not updating, but fresh inserting
+    if (index_slot == NULL) {
+        update = false;
+
+        // Try to find an available slot
+        index_slot = find_available_index_slot(args->index_region, key_hash);
+
+        // If we do not find one, there is no space left
+        if (index_slot == NULL) {
+            send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence,
+                     slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
+            put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+            free(data);
+            return;
+        }
+    } else {
+        update = true;
+    }
+
+    data_entry_preamble_t *data_slot = find_data_slot_for_index_slot(args->data_region,
+                                                                     index_slot,
+                                                                     update,
+                                                                     slot.key_length + slot.value_length,
+                                                                     buddy_wrapper);
+
+    insert_in_table(args->data_region,
+                    index_slot,
+                    data_slot,
+                    key,
+                    slot.key_length,
+                    key_hash,
+                    data,
+                    slot.value_length,
+                    slot.version_number);
+    free(data);
+
+    // Need to do this before sending ack in case of race
+    put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+
+    send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence, slot.version_number,
+             REPLICA_ACK_SUCCESS);
 }
 
 int put_request_region_poller(void *arg) {
@@ -44,9 +131,6 @@ int put_request_region_poller(void *arg) {
     volatile replica_ack_t *replica_ack;
     sci_error_t sci_error;
     sci_sequence_t put_ack_sequence;
-
-    struct timespec start;
-    struct timespec end;
 
     //Enter main loop
     while (1) {
@@ -92,13 +176,11 @@ int put_request_region_poller(void *arg) {
          */
         for (uint32_t current_head_slot = 0; current_head_slot < MAX_PUT_REQUEST_SLOTS; current_head_slot++) {
             header_slot_t slot = put_request_region->header_slots[current_head_slot];
-            if (slot.status != HEADER_SLOT_USED) continue;
+            if (slot.status == HEADER_SLOT_UNUSED) continue;
 
             char *data_slot_start = ((char *) put_request_region) + sizeof(put_request_region_t);
 
             size_t offset = slot.offset;
-
-            clock_gettime(CLOCK_MONOTONIC, &start);
 
             // TODO: We dont really need this, its just nice to have the key for debugging purposes, we could just have a pointer into the slot
             char *key = malloc(slot.key_length + 1);
@@ -115,86 +197,9 @@ int put_request_region_poller(void *arg) {
 
             uint32_t key_hash = super_fast_hash((void *) key, slot.key_length);
 
-            char *data = malloc(slot.value_length);
-            if (data == NULL) {
-                perror("malloc");
-                exit(EXIT_FAILURE);
-            }
+            // UP until this point is equal for both request types.
 
-            for (uint32_t i = 0; i < slot.value_length; i++) {
-                data[i] = data_slot_start[offset];
-                offset = (offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
-            }
-
-            uint32_t value_hash = super_fast_hash(data, (int) slot.value_length);
-
-            // TODO: This could be a function, shared with client
-            char *hash_data = malloc(sizeof(uint32_t) * 2);
-            if (hash_data == NULL) {
-                perror("malloc");
-                exit(EXIT_FAILURE);
-            }
-
-            // Copy key_hash into the first 4 bytes of hash_data
-            memcpy(hash_data, &key_hash, sizeof(uint32_t));
-
-            // Copy value_hash into the next 4 bytes of hash_data
-            memcpy(hash_data + sizeof(uint32_t), &value_hash, sizeof(uint32_t));
-
-            uint32_t payload_hash = super_fast_hash(hash_data, sizeof(uint32_t) * 2);
-            free(hash_data);
-
-            if (payload_hash != slot.payload_hash) {
-                // Torn read
-                put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
-                continue;
-            }
-
-            bool update;
-            index_entry_t *index_slot = existing_slot_for_key(args->index_region, args->data_region, key_hash,
-                                                              slot.key_length, key);
-
-            // If we did not find an existing slot, we are not updating, but fresh inserting
-            if (index_slot == NULL) {
-                update = false;
-
-                // Try to find an available slot
-                index_slot = find_available_index_slot(args->index_region, key_hash);
-
-                // If we do not find one, there is no space left
-                if (index_slot == NULL) {
-                    send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence,
-                             slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
-                    put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
-                    continue;
-                }
-            } else {
-                update = true;
-            }
-
-            data_entry_preamble_t *data_slot = find_data_slot_for_index_slot(args->data_region,
-                                                                             index_slot,
-                                                                             update,
-                                                                             slot.key_length + slot.value_length,
-                                                                             buddy_wrapper);
-
-            insert_in_table(args->data_region,
-                            index_slot,
-                            data_slot,
-                            key,
-                            slot.key_length,
-                            key_hash,
-                            data,
-                            slot.value_length,
-                            slot.version_number);
-            free(data);
-
-            // Need to do this before sending ack in case of race
-            put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
-
-            send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence, slot.version_number,
-                     REPLICA_ACK_SUCCESS);
-            clock_gettime(CLOCK_MONOTONIC, &end);
+            put(args, slot, current_head_slot, replica_ack, key_hash, key, put_ack_sequence, offset);
             free(key);
         }
     }
@@ -204,6 +209,7 @@ int put_request_region_poller(void *arg) {
 
 static void send_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
                      sci_sequence_t put_ack_sequence, uint32_t version_number, enum replica_ack_type ack_type) {
+    printf("acking\n");
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
     replica_ack_instance->version_number = version_number;
     replica_ack_instance->replica_ack_type = ack_type;
