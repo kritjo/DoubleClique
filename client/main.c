@@ -68,11 +68,12 @@ int main(int argc, char *argv[]) {
 
     promise = put(key, 4, sample_data, sizeof(sample_data));
 
-    while (promise->result == PUT_PENDING);
+    while (promise->put_result == PUT_PENDING);
 
     clock_gettime(CLOCK_MONOTONIC, &end);
     printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / 400001);
-    printf("Put result: %u\n", promise->result);
+    printf("Put result: %u\n", promise->put_result);
+
 
     get_return_t *return_struct1 = get_2_phase_read(key2, 5);
     get_return_t *return_struct2 = get_2_phase_read(key, 4);

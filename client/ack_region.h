@@ -18,6 +18,8 @@ extern sci_local_segment_t ack_segment;
 extern sci_map_t ack_map;
 
 void init_ack_region(sci_desc_t sd);
-ack_slot_t *get_ack_slot_blocking(enum request_promise_status initial_result, uint8_t key_len, uint32_t value_len, uint32_t version_number);
+ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_len, uint32_t value_len, uint32_t version_number);
+
+void *ack_thread(__attribute__((unused)) void *_args);
 
 #endif //DOUBLECLIQUE_ACK_REGION_H
