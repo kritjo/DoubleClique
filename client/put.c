@@ -33,22 +33,8 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
 
     uint32_t my_version_number = ((uint32_t) client_id) << 24 | version_number;
     version_number = (version_number + 1) % MAX_VERSION_NUMBER;
-    
-    ack_slot_t *ack_slot = get_ack_slot(PUT_PENDING, key_len, value_len, my_version_number);
 
-    // Wait for enough space
-    while (1) {
-        uint32_t used = (free_data_offset + REQUEST_REGION_DATA_SIZE
-                         - oldest_data_offset)
-                        % REQUEST_REGION_DATA_SIZE;
-
-        uint32_t free_space = REQUEST_REGION_DATA_SIZE - used;
-
-        if (free_space >= (key_len + value_len)) {
-            // There's enough space
-            break;
-        }
-    }
+    ack_slot_t *ack_slot = get_ack_slot_blocking(PUT_PENDING, key_len, value_len, my_version_number);
 
     for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
         replica_ack_t *replica_ack_instance = replica_ack + (free_header_slot * REPLICA_COUNT) + replica_index;
@@ -56,7 +42,8 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
         replica_ack_instance->version_number = 0;
     }
 
-    uint32_t starting_offset = free_data_offset;
+    uint32_t starting_offset = ack_slot->starting_data_offset;
+    uint32_t current_offset = starting_offset;
     volatile char *data_region_start = ((volatile char *) request_region) + sizeof(request_region_t);
 
     char *hash_data = malloc(key_len + value_len + sizeof(((header_slot_t *) 0)->version_number));
@@ -68,15 +55,15 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
     // First copy the key
     for (uint32_t i = 0; i < key_len; i++) {
         hash_data[i] = key[i];
-        data_region_start[free_data_offset] = key[i];
-        free_data_offset = (free_data_offset + 1) % REQUEST_REGION_DATA_SIZE;
+        data_region_start[current_offset] = key[i];
+        current_offset = (current_offset + 1) % REQUEST_REGION_DATA_SIZE;
     }
 
     // Next copy the data
     for (uint32_t i = 0; i < value_len; i++) {
         hash_data[i + key_len] = ((char *) value)[i];
-        data_region_start[free_data_offset] = ((char *) value)[i];
-        free_data_offset = (free_data_offset + 1) % REQUEST_REGION_DATA_SIZE;
+        data_region_start[current_offset] = ((char *) value)[i];
+        current_offset = (current_offset + 1) % REQUEST_REGION_DATA_SIZE;
     }
 
     // Copy key_hash into the first 4 bytes of hash_data
@@ -94,90 +81,4 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
     ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_PUT;
 
     return ack_slot->promise;
-}
-
-void *ack_thread(__attribute__((unused)) void *_args) {
-    while (1) {
-        if (oldest_header_slot == free_header_slot) { continue; }
-
-        ack_slot_t *ack_slot = &ack_slots[oldest_header_slot];
-
-        uint32_t ack_success_count = 0;
-        uint32_t ack_count = 0;
-        for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
-            replica_ack_t *replica_ack_instance = (replica_ack_t *) (replica_ack + (oldest_header_slot * REPLICA_COUNT) + replica_index);
-            enum replica_ack_type ack_type = replica_ack_instance->replica_ack_type;
-            uint32_t actual = replica_ack_instance->version_number;
-            uint32_t expected = ack_slot->version_number;
-
-            // If wrong version number, we do not count as ack
-            if (expected != actual) continue;
-
-            if (ack_type != REPLICA_NOT_ACKED)
-                ack_count++;
-
-            if (ack_type == REPLICA_ACK_SUCCESS)
-                ack_success_count++;
-        }
-
-        // If we got a quorum of success acks, count as success
-        if (ack_success_count >= (REPLICA_COUNT + 1) / 2) {
-            // Success!
-            ack_slot->promise->result = PUT_RESULT_SUCCESS;
-            goto walk_to_next_slot;
-        }
-
-        if (ack_count == REPLICA_COUNT) {
-            // Check what errors we have gotten
-            enum replica_ack_type replica_ack_type;
-            bool mix = false;
-            for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
-                replica_ack_t *replica_ack_instance = replica_ack + (oldest_header_slot * REPLICA_COUNT) + replica_index;
-
-                if (replica_index == 0) {
-                    replica_ack_type = replica_ack_instance->replica_ack_type;
-                    continue;
-                }
-                if (replica_ack_instance->replica_ack_type != replica_ack_type) {
-                    mix = true;
-                }
-            }
-
-            if (mix) {
-                ack_slot->promise->result = PUT_RESULT_ERROR_MIX;
-                goto walk_to_next_slot;
-            }
-
-            switch (replica_ack_type) {
-                case REPLICA_ACK_ERROR_OUT_OF_SPACE:
-                    ack_slot->promise->result = PUT_RESULT_ERROR_OUT_OF_SPACE;
-                    goto walk_to_next_slot;
-                case REPLICA_ACK_SUCCESS:
-                case REPLICA_NOT_ACKED:
-                default:
-                    fprintf(stderr, "Illegal REPLICA_ACK type!\n");
-                    exit(EXIT_FAILURE);
-            }
-        }
-
-        // If we do not have error replies and not a quorum, check for timeout
-        struct timespec end_p;
-        clock_gettime(CLOCK_MONOTONIC, &end_p);
-
-        if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= PUT_TIMEOUT_NS) {
-            ack_slot->promise->result = PUT_RESULT_ERROR_TIMEOUT;
-            printf("TIMEOUT!\n");
-            goto walk_to_next_slot;
-        }
-
-        // Not timeout, let it live on!
-        continue;
-
-        walk_to_next_slot:
-        ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_UNUSED;
-        oldest_header_slot = (oldest_header_slot + 1) % MAX_REQUEST_SLOTS;
-        oldest_data_offset = (oldest_data_offset + ack_slot->value_len + ack_slot->key_len) % REQUEST_REGION_DATA_SIZE;
-    }
-
-    return NULL;
 }

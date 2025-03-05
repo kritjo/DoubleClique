@@ -68,7 +68,7 @@ int main(int argc, char *argv[]) {
 
     promise = put(key, 4, sample_data, sizeof(sample_data));
 
-    while (promise->result == PUT_NOT_POSTED || promise->result == PUT_PENDING);
+    while (promise->result == PUT_PENDING);
 
     clock_gettime(CLOCK_MONOTONIC, &end);
     printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / 400001);

@@ -8,7 +8,6 @@
 #define PUT_TIMEOUT_NS 1000000000 //TODO: This should probably be a factor of queue length
 
 enum request_promise_status {
-    PUT_NOT_POSTED, // Retry
     PUT_PENDING,
     PUT_RESULT_SUCCESS,
     PUT_RESULT_ERROR_TIMEOUT,
@@ -32,6 +31,7 @@ typedef struct {
     uint8_t key_len;
     uint32_t value_len;
     uint32_t version_number;
+    uint32_t starting_data_offset;
 } ack_slot_t;
 
 void init_put(sci_desc_t sd);
