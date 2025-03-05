@@ -155,7 +155,7 @@ int request_region_poller(void *arg) {
                     ack_segment,
                     &ack_map,
                     NO_OFFSET,
-                    MAX_REQUEST_SLOTS * sizeof(replica_ack_t) * REPLICA_COUNT,
+                    ACK_REGION_SIZE,
                     NO_SUGGESTED_ADDRESS,
                     NO_FLAGS,
                     &sci_error);

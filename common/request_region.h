@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <sisci_types.h>
 #include "sisci_glob_defs.h"
+#include "index_data_protocol.h"
 
 #define PIPE_SIZE 20000 //bytes
 #define MAX_REQUEST_SLOTS (PIPE_SIZE/MIN_SIZE_ELEMENT)
@@ -52,7 +53,8 @@ typedef struct {
 } request_region_t;
 
 #define REQUEST_REGION_DATA_SIZE 2017136
-#define REQUEST_REGION_SIZE sizeof(request_region_t) + REQUEST_REGION_DATA_SIZE
+#define REQUEST_REGION_SIZE (sizeof(request_region_t) + REQUEST_REGION_DATA_SIZE)
+#define ACK_REGION_SIZE (MAX_REQUEST_SLOTS * sizeof(replica_ack_t) * REPLICA_COUNT)
 #define ACK_SEGMENT_ID 2
 
 #endif //DOUBLECLIQUE_REQUEST_REGION_H
