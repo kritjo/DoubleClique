@@ -92,7 +92,7 @@ void put(put_request_region_poller_thread_args_t *args, header_slot_t slot, uint
     data_entry_preamble_t *data_slot = find_data_slot_for_index_slot(args->data_region,
                                                                      index_slot,
                                                                      update,
-                                                                     slot.key_length + slot.value_length,
+                                                                     slot.key_length + slot.value_length + sizeof(((header_slot_t *) 0)->version_number),
                                                                      buddy_wrapper);
 
     insert_in_table(args->data_region,
@@ -103,7 +103,8 @@ void put(put_request_region_poller_thread_args_t *args, header_slot_t slot, uint
                     key_hash,
                     data,
                     slot.value_length,
-                    slot.version_number);
+                    slot.version_number,
+                    slot.payload_hash);
     free(data);
 
     // Need to do this before sending ack in case of race

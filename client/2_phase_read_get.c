@@ -370,7 +370,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
         unsigned int local_offset = 0;
 
         for (uint8_t slot_index = 0; slot_index < stored_index_data[replica_index].slots_length; slot++, slot_index++) {
-            dma_vec[slots_with_hash_count].size = slot->key_length + slot->data_length;
+            dma_vec[slots_with_hash_count].size = slot->key_length + slot->data_length + sizeof(uint32_t);
             dma_vec[slots_with_hash_count].remote_offset = (unsigned int) slot->offset;
             dma_vec[slots_with_hash_count].local_offset = local_offset;
             dma_vec[slots_with_hash_count].flags = NO_FLAGS;
@@ -485,7 +485,19 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
     }
 
     if (correct_vnr_count >= (REPLICA_COUNT + 1) / 2) {
+        // now we must verify the e2e hash
         pending_get_status.data_length = stored_index_data[args->replica_index].slots[correct_slot].data_length;
+
+        uint32_t expected_payload_hash = *((uint32_t *) (data_slot + args->key_len + pending_get_status.data_length));
+        *((uint32_t *) (data_slot + args->key_len + pending_get_status.data_length)) = (uint32_t) version_number;
+
+        uint32_t payload_hash = super_fast_hash(data_slot, (int) (args->key_len + pending_get_status.data_length +
+                                                                  sizeof(((header_slot_t *) 0)->version_number)));
+
+        if (payload_hash != expected_payload_hash) {
+            contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key, args->key_hash, args->key_len);
+            return SCI_CALLBACK_CONTINUE;
+        }
 
         memcpy(pending_get_status.data, data_slot + args->key_len, pending_get_status.data_length);
         pending_get_status.status = COMPLETED_SUCCESS;
@@ -623,7 +635,8 @@ contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_t
             // we would switch to a vector dma transfer, but I think that the overhead of computing that outweighs the
             // benefit, at least since we probably usually only have a single candidate
             size_t transfer_size = found_candidates[candidate_index].index_entry[replica_index].key_length +
-                                   found_candidates[candidate_index].index_entry[replica_index].data_length;
+                                   found_candidates[candidate_index].index_entry[replica_index].data_length +
+                                   sizeof(uint32_t);
 
             uint32_t offset = (uint32_t) found_candidates[candidate_index].index_entry[replica_index].offset;
 
@@ -701,6 +714,20 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
     if (strncmp(slot, args->key, args->index_entry.key_length) == 0) {
         // Match
         pending_get_status.data_length = args->index_entry.data_length;
+
+        uint32_t expected_payload_hash = *((uint32_t *) (slot + args->index_entry.key_length + pending_get_status.data_length));
+        *((uint32_t *) (slot + args->index_entry.key_length + pending_get_status.data_length)) = (uint32_t) args->index_entry.version_number;
+
+        uint32_t payload_hash = super_fast_hash(slot, (int) (args->index_entry.key_length + pending_get_status.data_length +
+                                                                  sizeof(((header_slot_t *) 0)->version_number)));
+
+        if (payload_hash != expected_payload_hash) {
+            pending_get_status.data_length = 0;
+            pending_get_status.data = 0;
+            pending_get_status.status = COMPLETED_ERROR;
+            pending_get_status.error_message = NO_DATA_MATCH_MSG;
+            return SCI_CALLBACK_CONTINUE;
+        }
 
         memcpy(pending_get_status.data, slot + args->index_entry.key_length, pending_get_status.data_length);
         pending_get_status.status = COMPLETED_SUCCESS;
