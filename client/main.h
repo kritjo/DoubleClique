@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <sisci_types.h>
 #include <pthread.h>
-#include "put_request_region.h"
+#include "request_region.h"
 #include "index_data_protocol.h"
 
 int main(int argc, char* argv[]);

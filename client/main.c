@@ -25,8 +25,8 @@ int main(int argc, char *argv[]) {
     // TODO: reset state if client reconnects
     init_put(sd);
 
-    pthread_t put_ack_thread_id;
-    pthread_create(&put_ack_thread_id, NULL, put_ack_thread, NULL);
+    pthread_t ack_thread_id;
+    pthread_create(&ack_thread_id, NULL, ack_thread, NULL);
 
     uint8_t replica_node_ids[REPLICA_COUNT];
 

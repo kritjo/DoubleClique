@@ -1,4 +1,4 @@
-#include "put_request_region_thread.h"
+#include "request_region_thread.h"
 
 #include <threads.h>
 #include <stdio.h>
@@ -6,7 +6,7 @@
 #include <stdbool.h>
 #include <sisci_api.h>
 #include <string.h>
-#include "put_request_region.h"
+#include "request_region.h"
 #include "sisci_glob_defs.h"
 #include "super_fast_hash.h"
 
@@ -15,22 +15,22 @@
 #define BUDDY_ALLOC_IMPLEMENTATION
 
 #include "buddy_alloc.h"
-#include "put_request_region_utils.h"
+#include "request_region_utils.h"
 
-static put_request_region_t *put_request_region;
+static request_region_t *request_region;
 static struct buddy *buddy = NULL;
 
 static void send_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
-                     sci_sequence_t put_ack_sequence, uint32_t version_number, enum replica_ack_type ack_type);
+                     sci_sequence_t ack_sequence, uint32_t version_number, enum replica_ack_type ack_type);
 
 static inline void *buddy_wrapper(size_t size) {
     return buddy_malloc(buddy, size);
 }
 
-void put(put_request_region_poller_thread_args_t *args, header_slot_t slot, uint32_t current_head_slot,
-                volatile replica_ack_t *replica_ack, uint32_t key_hash, char *key, sci_sequence_t put_ack_sequence,
-                size_t offset) {
-    char *data_slot_start = ((char *) put_request_region) + sizeof(put_request_region_t);
+void put(request_region_poller_thread_args_t *args, header_slot_t slot, uint32_t current_head_slot,
+         volatile replica_ack_t *replica_ack, uint32_t key_hash, char *key, sci_sequence_t ack_sequence,
+         size_t offset) {
+    char *data_slot_start = ((char *) request_region) + sizeof(request_region_t);
 
     char *data = malloc(slot.value_length);
     if (data == NULL) {
@@ -50,7 +50,7 @@ void put(put_request_region_poller_thread_args_t *args, header_slot_t slot, uint
     for (uint32_t i = 0; i < slot.value_length; i++) {
         data[i] = data_slot_start[offset];
         hash_data[i + slot.key_length] = data_slot_start[offset];
-        offset = (offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
+        offset = (offset + 1) % REQUEST_REGION_DATA_SIZE;
     }
 
     memcpy(hash_data + slot.key_length + slot.value_length, &slot.version_number, sizeof(((header_slot_t *) 0)->version_number));
@@ -61,7 +61,7 @@ void put(put_request_region_poller_thread_args_t *args, header_slot_t slot, uint
 
     if (payload_hash != slot.payload_hash) {
         // Torn read
-        put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+        request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
         free(data);
         return;
     }
@@ -79,9 +79,9 @@ void put(put_request_region_poller_thread_args_t *args, header_slot_t slot, uint
 
         // If we do not find one, there is no space left
         if (index_slot == NULL) {
-            send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence,
+            send_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence,
                      slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
-            put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+            request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
             free(data);
             return;
         }
@@ -108,16 +108,16 @@ void put(put_request_region_poller_thread_args_t *args, header_slot_t slot, uint
     free(data);
 
     // Need to do this before sending ack in case of race
-    put_request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+    request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
 
-    send_ack(args->replica_number, replica_ack, current_head_slot, put_ack_sequence, slot.version_number,
+    send_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence, slot.version_number,
              REPLICA_ACK_SUCCESS);
 }
 
-int put_request_region_poller(void *arg) {
-    put_request_region_poller_thread_args_t *args = (put_request_region_poller_thread_args_t *) arg;
-    init_put_request_region(args->sd, &put_request_region);
-    put_request_region->status = PUT_REQUEST_REGION_INACTIVE;
+int request_region_poller(void *arg) {
+    request_region_poller_thread_args_t *args = (request_region_poller_thread_args_t *) arg;
+    init_request_region(args->sd, &request_region);
+    request_region->status = REQUEST_REGION_INACTIVE;
 
     // Set up buddy allocator
     void *buddy_metadata = malloc(buddy_sizeof(DATA_REGION_SIZE));
@@ -125,15 +125,15 @@ int put_request_region_poller(void *arg) {
 
     bool connected_to_client = false;
 
-    sci_remote_segment_t put_ack_segment;
-    sci_map_t put_ack_map;
+    sci_remote_segment_t ack_segment;
+    sci_map_t ack_map;
     volatile replica_ack_t *replica_ack;
     sci_error_t sci_error;
-    sci_sequence_t put_ack_sequence;
+    sci_sequence_t ack_sequence;
 
     //Enter main loop
     while (1) {
-        if (put_request_region->status == PUT_REQUEST_REGION_INACTIVE) {
+        if (request_region->status == REQUEST_REGION_INACTIVE) {
             thrd_yield();
             continue;
         }
@@ -142,9 +142,9 @@ int put_request_region_poller(void *arg) {
         if (!connected_to_client) {
             SEOE(SCIConnectSegment,
                  args->sd,
-                 &put_ack_segment,
-                 put_request_region->sisci_node_id,
-                 PUT_ACK_SEGMENT_ID,
+                 &ack_segment,
+                 request_region->sisci_node_id,
+                 ACK_SEGMENT_ID,
                  ADAPTER_NO,
                  NO_CALLBACK,
                  NO_ARG,
@@ -152,17 +152,17 @@ int put_request_region_poller(void *arg) {
                  NO_FLAGS);
 
             replica_ack = (volatile replica_ack_t *) SCIMapRemoteSegment(
-                    put_ack_segment,
-                    &put_ack_map,
+                    ack_segment,
+                    &ack_map,
                     NO_OFFSET,
-                    MAX_PUT_REQUEST_SLOTS * sizeof(replica_ack_t) * REPLICA_COUNT,
+                    MAX_REQUEST_SLOTS * sizeof(replica_ack_t) * REPLICA_COUNT,
                     NO_SUGGESTED_ADDRESS,
                     NO_FLAGS,
                     &sci_error);
 
             SEOE(SCICreateMapSequence,
-                 put_ack_map,
-                 &put_ack_sequence,
+                 ack_map,
+                 &ack_sequence,
                  NO_FLAGS);
 
             connected_to_client = true;
@@ -173,11 +173,11 @@ int put_request_region_poller(void *arg) {
          * sync up, as when we hit a slot that we actually need to do something with, the next in the loop will be ready
          * when we continue;.
          */
-        for (uint32_t current_head_slot = 0; current_head_slot < MAX_PUT_REQUEST_SLOTS; current_head_slot++) {
-            header_slot_t slot = put_request_region->header_slots[current_head_slot];
+        for (uint32_t current_head_slot = 0; current_head_slot < MAX_REQUEST_SLOTS; current_head_slot++) {
+            header_slot_t slot = request_region->header_slots[current_head_slot];
             if (slot.status == HEADER_SLOT_UNUSED) continue;
 
-            char *data_slot_start = ((char *) put_request_region) + sizeof(put_request_region_t);
+            char *data_slot_start = ((char *) request_region) + sizeof(request_region_t);
 
             size_t offset = slot.offset;
 
@@ -190,7 +190,7 @@ int put_request_region_poller(void *arg) {
 
             for (uint32_t i = 0; i < slot.key_length; i++) {
                 key[i] = data_slot_start[offset];
-                offset = (offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
+                offset = (offset + 1) % REQUEST_REGION_DATA_SIZE;
             }
             key[slot.key_length] = '\0';
 
@@ -198,7 +198,7 @@ int put_request_region_poller(void *arg) {
 
             // UP until this point is equal for both request types.
 
-            put(args, slot, current_head_slot, replica_ack, key_hash, key, put_ack_sequence, offset);
+            put(args, slot, current_head_slot, replica_ack, key_hash, key, ack_sequence, offset);
             free(key);
         }
     }
@@ -207,9 +207,9 @@ int put_request_region_poller(void *arg) {
 }
 
 static void send_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
-                     sci_sequence_t put_ack_sequence, uint32_t version_number, enum replica_ack_type ack_type) {
+                     sci_sequence_t ack_sequence, uint32_t version_number, enum replica_ack_type ack_type) {
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
     replica_ack_instance->version_number = version_number;
     replica_ack_instance->replica_ack_type = ack_type;
-    SCIFlush(put_ack_sequence, NO_FLAGS); //TODO: is this needed?
+    SCIFlush(ack_sequence, NO_FLAGS); //TODO: is this needed?
 }

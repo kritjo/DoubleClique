@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include "index_data_protocol.h"
-#include "put_request_region.h"
+#include "request_region.h"
 
 // Return an existing index slot in the index region for the particular key, NULL if it does not exist
 index_entry_t *existing_slot_for_key(void *index_region, void *data_region, uint32_t key_hash, uint32_t key_length, char *key) {

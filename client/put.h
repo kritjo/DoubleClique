@@ -3,7 +3,7 @@
 
 #include <time.h>
 #include "sisci_glob_defs.h"
-#include "put_request_region.h"
+#include "request_region.h"
 
 #define PUT_TIMEOUT_NS 1000000000 //TODO: This should probably be a factor of queue length
 
@@ -27,10 +27,10 @@ typedef struct {
     uint8_t key_len;
     uint32_t value_len;
     uint32_t version_number;
-} put_ack_slot_t;
+} ack_slot_t;
 
 void init_put(sci_desc_t sd);
 put_promise_t *put_blocking_until_available_put_request_region_slot(const char *key, uint8_t key_len, void *value, uint32_t value_len);
-void *put_ack_thread(__attribute__((unused)) void *_args);
+void *ack_thread(__attribute__((unused)) void *_args);
 
 #endif //DOUBLECLIQUE_PUT_H

@@ -1,5 +1,5 @@
-#ifndef DOUBLECLIQUE_PUT_REQUEST_REGION_H
-#define DOUBLECLIQUE_PUT_REQUEST_REGION_H
+#ifndef DOUBLECLIQUE_REQUEST_REGION_H
+#define DOUBLECLIQUE_REQUEST_REGION_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -8,11 +8,11 @@
 #include "sisci_glob_defs.h"
 
 #define PIPE_SIZE 20000 //bytes
-#define MAX_PUT_REQUEST_SLOTS (PIPE_SIZE/MIN_SIZE_ELEMENT)
-#define PUT_REQUEST_SEGMENT_ID 1
+#define MAX_REQUEST_SLOTS (PIPE_SIZE/MIN_SIZE_ELEMENT)
+#define REQUEST_SEGMENT_ID 1
 
 typedef enum {
-    PUT_REQUEST_REGION_INACTIVE,
+    REQUEST_REGION_INACTIVE,
     PUT_REQUEST_REGION_ACTIVE
 } put_request_region_status_t;
 
@@ -47,12 +47,12 @@ typedef struct {
 
 typedef struct {
     uint8_t sisci_node_id; // Only valid when status != 0
-    header_slot_t header_slots[MAX_PUT_REQUEST_SLOTS];
+    header_slot_t header_slots[MAX_REQUEST_SLOTS];
     put_request_region_status_t status;
-} put_request_region_t;
+} request_region_t;
 
-#define PUT_REQUEST_REGION_DATA_SIZE 2017136
-#define PUT_REQUEST_REGION_SIZE sizeof(put_request_region_t) + PUT_REQUEST_REGION_DATA_SIZE
-#define PUT_ACK_SEGMENT_ID 2
+#define REQUEST_REGION_DATA_SIZE 2017136
+#define REQUEST_REGION_SIZE sizeof(request_region_t) + REQUEST_REGION_DATA_SIZE
+#define ACK_SEGMENT_ID 2
 
-#endif //DOUBLECLIQUE_PUT_REQUEST_REGION_H
+#endif //DOUBLECLIQUE_REQUEST_REGION_H

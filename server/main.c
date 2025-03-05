@@ -4,7 +4,7 @@
 #include <sisci_api.h>
 #include <string.h>
 #include "sisci_glob_defs.h"
-#include "put_request_region_thread.h"
+#include "request_region_thread.h"
 #include "index_data_protocol.h"
 #include "segment_utils.h"
 
@@ -51,12 +51,12 @@ int main(int argc, char* argv[]) {
 
     memset(data, 0, DATA_REGION_SIZE);
 
-    put_request_region_poller_thread_args_t args;
+    request_region_poller_thread_args_t args;
     args.sd = sd;
     args.replica_number = replica_id;
     args.index_region = index;
     args.data_region = data;
-    put_request_region_poller(&args);
+    request_region_poller(&args);
 
     SEOE(SCIClose, sd, NO_FLAGS);
     SCITerminate();

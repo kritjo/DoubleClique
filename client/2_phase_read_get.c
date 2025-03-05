@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "sisci_glob_defs.h"
-#include "put_request_region.h"
+#include "request_region.h"
 #include "index_data_protocol.h"
 
 #include "super_fast_hash.h"
