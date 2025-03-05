@@ -160,6 +160,11 @@ int request_region_poller(void *arg) {
                     NO_FLAGS,
                     &sci_error);
 
+            if (sci_error != SCI_ERR_OK) {
+                fprintf(stderr, "Error mapping remote segment: %s\n", SCIGetErrorString(sci_error));
+                exit(EXIT_FAILURE);
+            }
+
             SEOE(SCICreateMapSequence,
                  ack_map,
                  &ack_sequence,

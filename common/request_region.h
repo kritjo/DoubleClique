@@ -26,6 +26,7 @@ enum replica_ack_type {
 typedef struct {
     enum replica_ack_type replica_ack_type;
     uint32_t version_number;
+    index_entry_t bucket[INDEX_SLOTS_PR_BUCKET];
 } replica_ack_t;
 
 enum header_slot_status {
@@ -54,7 +55,8 @@ typedef struct {
 
 #define REQUEST_REGION_DATA_SIZE 2017136
 #define REQUEST_REGION_SIZE (sizeof(request_region_t) + REQUEST_REGION_DATA_SIZE)
-#define ACK_REGION_SIZE (MAX_REQUEST_SLOTS * sizeof(replica_ack_t) * REPLICA_COUNT)
+#define ACK_REGION_DATA_SIZE 0x200000
+#define ACK_REGION_SIZE (MAX_REQUEST_SLOTS * sizeof(replica_ack_t) * REPLICA_COUNT + ACK_REGION_DATA_SIZE)
 #define ACK_SEGMENT_ID 2
 
 #endif //DOUBLECLIQUE_REQUEST_REGION_H

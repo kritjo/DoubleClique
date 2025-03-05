@@ -44,8 +44,8 @@ int main(int argc, char *argv[]) {
         replica_node_ids[replica_index] = (uint8_t) replica_node_id;
     }
 
-    connect_to_request_region(sd);
     init_ack_region(sd);
+    connect_to_request_region(sd);
     init_2_phase_read_get(sd, replica_node_ids, false);
 
     unsigned char sample_data[8];

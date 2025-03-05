@@ -8,6 +8,9 @@
 extern volatile _Atomic uint32_t free_header_slot;
 extern volatile _Atomic uint32_t oldest_header_slot;
 
+extern volatile _Atomic uint32_t free_ack_data;
+extern volatile _Atomic uint32_t oldest_ack_data;
+
 extern replica_ack_t *replica_ack;
 extern ack_slot_t ack_slots[MAX_REQUEST_SLOTS];
 

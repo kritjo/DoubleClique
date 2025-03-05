@@ -6,6 +6,9 @@
 volatile _Atomic uint32_t free_header_slot = 0;
 volatile _Atomic uint32_t oldest_header_slot = 0;
 
+volatile _Atomic uint32_t free_ack_data = 0;
+volatile _Atomic uint32_t oldest_ack_data = 0;
+
 replica_ack_t *replica_ack;
 ack_slot_t ack_slots[MAX_REQUEST_SLOTS];
 
