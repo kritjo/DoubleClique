@@ -20,14 +20,19 @@
 static request_region_t *request_region;
 static struct buddy *buddy = NULL;
 
-static void send_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
-                     sci_sequence_t ack_sequence, uint32_t version_number, enum replica_ack_type ack_type);
+static void send_put_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
+                         sci_sequence_t ack_sequence, uint32_t version_number, enum replica_ack_type ack_type);
+
+static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
+                                uint32_t key_hash, char *index_region);
+
+static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot, const char *data_pointer, uint32_t transfer_length, size_t return_offset);
 
 static inline void *buddy_wrapper(size_t size) {
     return buddy_malloc(buddy, size);
 }
 
-void put(request_region_poller_thread_args_t *args, header_slot_t slot, uint32_t current_head_slot,
+static void put(request_region_poller_thread_args_t *args, header_slot_t slot, uint32_t current_head_slot,
          volatile replica_ack_t *replica_ack, uint32_t key_hash, char *key, sci_sequence_t ack_sequence,
          size_t offset) {
     char *data_slot_start = ((char *) request_region) + sizeof(request_region_t);
@@ -79,8 +84,8 @@ void put(request_region_poller_thread_args_t *args, header_slot_t slot, uint32_t
 
         // If we do not find one, there is no space left
         if (index_slot == NULL) {
-            send_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence,
-                     slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
+            send_put_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence,
+                         slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
             request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
             free(data);
             return;
@@ -110,8 +115,8 @@ void put(request_region_poller_thread_args_t *args, header_slot_t slot, uint32_t
     // Need to do this before sending ack in case of race
     request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
 
-    send_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence, slot.version_number,
-             REPLICA_ACK_SUCCESS);
+    send_put_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence, slot.version_number,
+                 REPLICA_ACK_SUCCESS);
 }
 
 int request_region_poller(void *arg) {
@@ -203,7 +208,33 @@ int request_region_poller(void *arg) {
 
             // UP until this point is equal for both request types.
 
-            put(args, slot, current_head_slot, replica_ack, key_hash, key, ack_sequence, offset);
+            switch (slot.status) {
+                case HEADER_SLOT_USED_PUT:
+                    put(args, slot, current_head_slot, replica_ack, key_hash, key, ack_sequence, offset);
+                    break;
+                case HEADER_SLOT_USED_GET_PHASE1:
+                    // Now we need to ship our index entries for this keyhash back
+                    if (key_hash != slot.payload_hash) {
+                        break;
+                    }
+                    send_get_ack_phase1(args->replica_number, replica_ack, current_head_slot, key_hash,
+                                        args->index_region);
+                    break;
+                case HEADER_SLOT_USED_GET_PHASE2:
+                    if (slot.replica_write_back_hint == args->replica_number) {
+                        send_get_ack_phase2(replica_ack, current_head_slot, ((char *) args->data_region) + slot.offset,
+                                            slot.key_length + slot.value_length + sizeof(uint32_t), slot.return_offset);
+                    } else {
+                        request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
+                    }
+                    break;
+                case HEADER_SLOT_UNUSED:
+                    fprintf(stderr, "Illegal state, but should be recoverable\n");
+                    break;
+                default:
+                    fprintf(stderr, "Illegal state in request region thread\n");
+                    exit(EXIT_FAILURE);
+            }
             free(key);
         }
     }
@@ -211,10 +242,33 @@ int request_region_poller(void *arg) {
     return 0;
 }
 
-static void send_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
-                     sci_sequence_t ack_sequence, uint32_t version_number, enum replica_ack_type ack_type) {
+static void send_put_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
+                         sci_sequence_t ack_sequence, uint32_t version_number, enum replica_ack_type ack_type) {
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
     replica_ack_instance->version_number = version_number;
     replica_ack_instance->replica_ack_type = ack_type;
     SCIFlush(ack_sequence, NO_FLAGS); //TODO: is this needed?
+}
+
+static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
+                                uint32_t key_hash, char *index_region) {
+    volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
+    for (uint32_t i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
+        replica_ack_instance->bucket[i] = *((index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, i));
+    }
+    request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
+
+    replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
+}
+
+static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot, const char *data_pointer, uint32_t transfer_length, size_t return_offset) {
+    volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT);
+    for (uint32_t i = 0; i < transfer_length; i++) {
+        *(((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + return_offset + i) = *(data_pointer + i);
+        //printf("%p: %u\n", (void *) (data_pointer + i), *(data_pointer + i));
+    }
+
+    request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
+
+    replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
 }

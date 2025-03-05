@@ -24,15 +24,16 @@ enum replica_ack_type {
 };
 
 typedef struct {
-    enum replica_ack_type replica_ack_type;
     uint32_t version_number;
-    index_entry_t bucket[INDEX_SLOTS_PR_BUCKET];
+    index_entry_t bucket[INDEX_SLOTS_PR_BUCKET]; // Only valid for GETs
+    enum replica_ack_type replica_ack_type;
 } replica_ack_t;
 
 enum header_slot_status {
     HEADER_SLOT_UNUSED,
     HEADER_SLOT_USED_PUT,
-    HEADER_SLOT_USED_GET
+    HEADER_SLOT_USED_GET_PHASE1,
+    HEADER_SLOT_USED_GET_PHASE2
 };
 
 #define MAX_VERSION_NUMBER 0x1000000
@@ -43,6 +44,8 @@ typedef struct {
     uint32_t value_length;
     uint32_t version_number;
     size_t offset;
+    size_t return_offset;
+    uint32_t replica_write_back_hint; //TODO: Perhaps we should send this as a pio instead of broadcast but this is simpler
     uint32_t payload_hash; // The payload hash is just hash(keyhash valuehash)
     enum header_slot_status status;
 } header_slot_t;
@@ -53,10 +56,11 @@ typedef struct {
     put_request_region_status_t status;
 } request_region_t;
 
-#define REQUEST_REGION_DATA_SIZE 2017136
-#define REQUEST_REGION_SIZE (sizeof(request_region_t) + REQUEST_REGION_DATA_SIZE)
+#define REQUEST_REGION_SIZE 0x200000
+#define REQUEST_REGION_DATA_SIZE (REQUEST_REGION_SIZE - sizeof(request_region_t))
 #define ACK_REGION_DATA_SIZE 0x200000
-#define ACK_REGION_SIZE (MAX_REQUEST_SLOTS * sizeof(replica_ack_t) * REPLICA_COUNT + ACK_REGION_DATA_SIZE)
+#define ACK_REGION_SLOT_SIZE (MAX_REQUEST_SLOTS * sizeof(replica_ack_t) * REPLICA_COUNT)
+#define ACK_REGION_SIZE (ACK_REGION_SLOT_SIZE + ACK_REGION_DATA_SIZE)
 #define ACK_SEGMENT_ID 2
 
 #endif //DOUBLECLIQUE_REQUEST_REGION_H

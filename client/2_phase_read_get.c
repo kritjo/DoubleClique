@@ -193,6 +193,7 @@ get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
     // This is most simple to do using DMA transfers as we can specify callback functions that will be called upon
     // completion. This is not a big drawback it would seem from experiments.
 
+    // TODO: Should not malloc max space
     pending_get_status.data = malloc(MAX_SIZE_ELEMENT);
     if (pending_get_status.data == NULL) {
         perror("malloc");
@@ -256,7 +257,7 @@ get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
         if (((ts.tv_sec - ts_pre.tv_sec) * 1000000000L + (ts.tv_nsec - ts_pre.tv_nsec)) > GET_TIMEOUT_NS) {
             // Timeout!
-            printf("TIMEOUT GET!\n");
+            printf("TIMEOUT GET_PHASE1!\n");
             for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
                 // Abort all pending DMA operations
                 if (use_dma)

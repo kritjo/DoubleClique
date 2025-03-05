@@ -12,6 +12,7 @@
 #include "put.h"
 #include "request_region_connection.h"
 #include "ack_region.h"
+#include "b3p_get.h"
 
 static sci_desc_t sd;
 
@@ -61,6 +62,7 @@ int main(int argc, char *argv[]) {
 
     request_promise_t *promise;
     clock_gettime(CLOCK_MONOTONIC, &start);
+
     for (uint32_t i = 0; i < 200000; i++) {
         put(key, 4, sample_data, sizeof(sample_data));
         put(key2, 5, &i, sizeof(i));
@@ -75,10 +77,13 @@ int main(int argc, char *argv[]) {
     printf("Put result: %u\n", promise->put_result);
 
 
-    get_return_t *return_struct1 = get_2_phase_read(key2, 5);
     get_return_t *return_struct2 = get_2_phase_read(key, 4);
 
     if (return_struct2->status == GET_RETURN_SUCCESS) printf("At place 7 of get with data_2 length %u: %u\n", return_struct2->data_length, ((unsigned char *) return_struct2->data)[7]);
+    else printf("get error: %s\n", return_struct2->error_message);
+
+
+    get_return_t *return_struct1 = get_2_phase_read(key2, 5);
     if (return_struct1->status == GET_RETURN_SUCCESS) printf("At place 0 of get with data length %u: %u\n", return_struct1->data_length , *(uint32_t *) return_struct1->data);
 
     free(return_struct1->data);
@@ -98,6 +103,27 @@ int main(int argc, char *argv[]) {
     }
     clock_gettime(CLOCK_MONOTONIC, &end);
     printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / 20);
+
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (uint32_t i = 0; i < 200; i++) {
+        promise = get_b3p(key2, 5); // Note that data should really be freed but is not
+        promise = get_b3p(key, 4);
+    }
+    while (promise->get_result == GET_PENDING);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    printf("Get b3p on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / 400);
+
+    promise = get_b3p(key, 4);
+    printf("main promise %p\n", (void *) promise);
+    while (promise->get_result == GET_PENDING);
+    if (promise->get_result == GET_RESULT_SUCCESS) {
+        printf("success data ptr: %p\n", promise->data);
+        printf("completed! at place 7: %u\n", ((unsigned char *) promise->data)[7]);
+    }
+    else printf("get error: %u at %p\n", promise->get_result, (void *) &promise->get_result);
+    free(promise->data);
+    free(promise);
 
     while (1);
 

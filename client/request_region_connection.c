@@ -10,9 +10,6 @@
 volatile request_region_t *request_region;
 sci_sequence_t request_sequence;
 
-volatile _Atomic uint32_t free_data_offset = 0;
-volatile _Atomic uint32_t oldest_data_offset = 0;
-
 static uint8_t client_id;
 
 void connect_to_request_region(sci_desc_t sd) {

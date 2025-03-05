@@ -1,14 +1,23 @@
 #include <sisci_api.h>
 #include <stdlib.h>
+#include <time.h>
 #include "ack_region.h"
 #include "index_data_protocol.h"
 #include "request_region_connection.h"
+#include "put.h"
+#include "b3p_get.h"
 
-volatile _Atomic uint32_t free_header_slot = 0;
-volatile _Atomic uint32_t oldest_header_slot = 0;
+static pthread_mutex_t header_mutex;
+static uint32_t free_header_slot = 0;
+static uint32_t oldest_header_slot = 0;
 
-volatile _Atomic uint32_t free_ack_data = 0;
-volatile _Atomic uint32_t oldest_ack_data = 0;
+pthread_mutex_t ack_mutex;
+static uint32_t free_ack_offset = 0;
+uint32_t oldest_ack_offset = 0;
+
+static pthread_mutex_t data_mutex;
+static uint32_t free_data_offset = 0;
+static uint32_t oldest_data_offset = 0;
 
 replica_ack_t *replica_ack;
 ack_slot_t ack_slots[MAX_REQUEST_SLOTS];
@@ -51,12 +60,23 @@ void init_ack_region(sci_desc_t sd) {
         fprintf(stderr, "Could not map local segment: %s\n", SCIGetErrorString(sci_error));
         exit(EXIT_FAILURE);
     }
+
+    pthread_mutex_init(&data_mutex, NULL);
+    pthread_mutex_init(&ack_mutex, NULL);
+    pthread_mutex_init(&header_mutex, NULL);
 }
 
 // Critical region function
-ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_len, uint32_t value_len, uint32_t version_number) {
-    while ((free_header_slot + 1) % MAX_REQUEST_SLOTS == oldest_header_slot); // This complains but I think using atomics should work TODO: try removing volatile
+ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_len, uint32_t value_len, uint32_t header_data_length, uint32_t ack_data_length, uint32_t version_number, request_promise_t *promise) {
 
+    bool loop = true;
+    while (loop) {
+        pthread_mutex_lock(&header_mutex);
+        loop = (free_header_slot + 1) % MAX_REQUEST_SLOTS == oldest_header_slot;
+        pthread_mutex_unlock(&header_mutex);
+    }
+
+    pthread_mutex_lock(&header_mutex);
     ack_slot_t *ack_slot = &ack_slots[free_header_slot];
     ack_slot->header_slot_WRITE_ONLY = &request_region->header_slots[free_header_slot];
 
@@ -68,21 +88,29 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
     }
 
     free_header_slot = (free_header_slot + 1) % MAX_REQUEST_SLOTS;
+    pthread_mutex_unlock(&header_mutex);
+
 
     clock_gettime(CLOCK_MONOTONIC, &ack_slot->start_time);
 
-    request_promise_t *promise = malloc(sizeof(request_promise_t));
     if (promise == NULL) {
-        perror("malloc");
-        exit(EXIT_FAILURE);
+        promise = malloc(sizeof(request_promise_t));
+        if (promise == NULL) {
+            perror("malloc");
+            exit(EXIT_FAILURE);
+        }
     }
+
+    ack_slot->request_type = request_type;
 
     switch (ack_slot->request_type) {
         case PUT:
             promise->put_result = PUT_PENDING;
             break;
-        case GET:
-            promise->put_result = GET_PENDING;
+        case GET_PHASE1:
+            promise->get_result = GET_PENDING;
+            break;
+        case GET_PHASE2:
             break;
         default:
             fprintf(stderr, "Got illegal request type\n");
@@ -97,27 +125,55 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
 
     // Wait for enough space
     while (1) {
+        pthread_mutex_lock(&data_mutex);
         uint32_t used = (free_data_offset + REQUEST_REGION_DATA_SIZE
                          - oldest_data_offset)
                         % REQUEST_REGION_DATA_SIZE;
+        pthread_mutex_unlock(&data_mutex);
+
 
         uint32_t free_space = REQUEST_REGION_DATA_SIZE - used;
 
-        if (free_space >= (key_len + value_len)) {
+        if (free_space >= (header_data_length)) {
             // There's enough space
             break;
         }
     }
 
+
+    pthread_mutex_lock(&data_mutex);
     ack_slot->starting_data_offset = free_data_offset;
-    free_data_offset = (free_data_offset + key_len + value_len) % REQUEST_REGION_DATA_SIZE;
+    free_data_offset = (free_data_offset + header_data_length) % REQUEST_REGION_DATA_SIZE;
+    pthread_mutex_unlock(&data_mutex);
+
+    while (1) {
+        pthread_mutex_lock(&ack_mutex);
+        uint32_t used = (free_ack_offset + ACK_REGION_DATA_SIZE
+                         - oldest_ack_offset)
+                        % ACK_REGION_DATA_SIZE;
+        pthread_mutex_unlock(&ack_mutex);
+
+        uint32_t free_space = ACK_REGION_DATA_SIZE - used;
+
+        if (free_space >= (ack_data_length)) {
+            // There's enough space
+            break;
+        }
+    }
+
+    pthread_mutex_lock(&ack_mutex);
+    ack_slot->starting_ack_data_offset = free_ack_offset;
+    free_ack_offset = (free_ack_offset + ack_data_length) % ACK_REGION_DATA_SIZE;
+    pthread_mutex_unlock(&ack_mutex);
 
     return ack_slot;
 }
 
 void *ack_thread(__attribute__((unused)) void *_args) {
     while (1) {
-        if (oldest_header_slot == free_header_slot) { continue; }
+        pthread_mutex_lock(&header_mutex);
+        if (oldest_header_slot == free_header_slot) { pthread_mutex_unlock(&header_mutex); continue; }
+        pthread_mutex_unlock(&header_mutex);
 
         ack_slot_t *ack_slot = &ack_slots[oldest_header_slot];
 
@@ -126,9 +182,11 @@ void *ack_thread(__attribute__((unused)) void *_args) {
             case PUT:
                 consumed = consume_put_ack_slot(ack_slot);
                 break;
-            case GET:
-                printf("not handled yet\n");
-                exit(EXIT_FAILURE);
+            case GET_PHASE1:
+                consumed = consume_get_ack_slot_phase1(ack_slot);
+                break;
+            case GET_PHASE2:
+                consumed = consume_get_ack_slot_phase2(ack_slot);
                 break;
             default:
                 fprintf(stderr, "Got illegal request type\n");
@@ -139,8 +197,12 @@ void *ack_thread(__attribute__((unused)) void *_args) {
             continue;
 
         ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_UNUSED;
+        pthread_mutex_lock(&header_mutex);
         oldest_header_slot = (oldest_header_slot + 1) % MAX_REQUEST_SLOTS;
+        pthread_mutex_unlock(&header_mutex);
+        pthread_mutex_lock(&data_mutex);
         oldest_data_offset = (oldest_data_offset + ack_slot->value_len + ack_slot->key_len) % REQUEST_REGION_DATA_SIZE;
+        pthread_mutex_unlock(&data_mutex);
     }
 
     return NULL;

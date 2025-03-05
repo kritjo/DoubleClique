@@ -1,5 +1,237 @@
+#include <malloc.h>
+#include <stdlib.h>
+#include <string.h>
 #include "b3p_get.h"
+#include "ack_region.h"
+#include "request_region_connection.h"
+#include "super_fast_hash.h"
+#include "2_phase_read_get.h"
 
-get_return_t *get_b3p(const char *key, uint8_t key_len) {
+request_promise_t *get_b3p(const char *key, uint8_t key_len) {
+    // First we need to get a header slot
+    // Then we need to broadcast the request
+    // Then wait until we have a quorum
+    // Then fetch data from preferred backend
 
+    ack_slot_t *ack_slot = get_ack_slot_blocking(GET_PHASE1, key_len, 0, key_len, 0, 0, NULL);
+
+    uint32_t starting_offset = ack_slot->starting_data_offset;
+    uint32_t current_offset = starting_offset;
+    volatile char *data_region_start = ((volatile char *) request_region) + sizeof(request_region_t);
+
+    char *hash_data = malloc(key_len);
+    if (hash_data == NULL) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+
+    // First copy the key
+    for (uint32_t i = 0; i < key_len; i++) {
+        hash_data[i] = key[i];
+        data_region_start[current_offset] = key[i];
+        current_offset = (current_offset + 1) % REQUEST_REGION_DATA_SIZE;
+    }
+
+    uint32_t key_hash = super_fast_hash(hash_data, (int) (key_len));
+    ack_slot->key = hash_data;
+
+    ack_slot->key_hash = key_hash;
+
+    ack_slot->header_slot_WRITE_ONLY->payload_hash = key_hash;
+    ack_slot->header_slot_WRITE_ONLY->offset = (size_t) starting_offset;
+    ack_slot->header_slot_WRITE_ONLY->key_length = key_len;
+    ack_slot->header_slot_WRITE_ONLY->value_length = 0;
+    ack_slot->header_slot_WRITE_ONLY->version_number = ack_slot->version_number;
+    ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_GET_PHASE1;
+
+    return ack_slot->promise;
+}
+
+bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
+    uint32_t ack_success_count = 0;
+    uint32_t ack_count = 0;
+
+    for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
+        replica_ack_t *replica_ack_instance = ack_slot->replica_ack_instances[replica_index];
+        enum replica_ack_type ack_type = replica_ack_instance->replica_ack_type;
+
+        if (ack_type != REPLICA_NOT_ACKED)
+            ack_count++;
+
+        if (ack_type == REPLICA_ACK_SUCCESS)
+            ack_success_count++;
+    }
+
+    // If we do not have error replies and not a quorum, check for timeout
+    struct timespec end_p;
+    clock_gettime(CLOCK_MONOTONIC, &end_p);
+
+    if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= B3PGET_TIMEOUT_NS) {
+        ack_slot->promise->get_result = GET_RESULT_ERROR_TIMEOUT;
+        free(ack_slot->key);
+        printf("TIMEOUT phase1!\n");
+        return true;
+    }
+
+    // If we got a quorum of success acks, count as success
+    if (ack_success_count >= (REPLICA_COUNT + 1) / 2) {
+        // Now we must check if we have a quorum, if we do dispatch final request and return true
+        version_count_t candidates[REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET];
+        uint32_t candidate_count = 0;
+
+        for (uint32_t i = 0; i < REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET; i++) {
+            candidates[i].count = 0;
+            candidates[i].version_number = 0;
+            for (uint32_t j = 0; j < REPLICA_COUNT; j++) {
+                candidates[i].index_entry[j].status = 0;
+            }
+        }
+
+        for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
+            replica_ack_t *replica_ack_instance = ack_slot->replica_ack_instances[replica_index];
+
+            // For every replica, we need to check all of their returned index entries
+            for (uint32_t slot_index = 0; slot_index < INDEX_SLOTS_PR_BUCKET; slot_index++) {
+                index_entry_t slot = replica_ack_instance->bucket[slot_index];
+
+                if (slot.status != 1) continue;
+                if (slot.key_length != ack_slot->key_len) continue;
+                if (slot.hash != ack_slot->key_hash) continue;
+
+                bool found = false;
+
+                // For every index entry's version number we need to count it in the candidates structure
+                // This could be done more efficiently with a hash map or something but the structures are very short
+                // so that is not done yet.
+                for (uint32_t candidate_index = 0; candidate_index < candidate_count; candidate_index++) {
+                    if (candidates[candidate_index].version_number == slot.version_number) {
+                        found = true;
+                        candidates[candidate_index].count++;
+                        candidates[candidate_index].index_entry[replica_index] = slot;
+                    }
+                }
+
+                if (!found) {
+                    candidates[candidate_count].version_number = slot.version_number;
+                    candidates[candidate_count].index_entry[replica_index] = slot;
+                    candidates[candidate_count++].count = 1;
+                }
+            }
+        }
+
+        found_candidates_t found_candidates[REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET];
+        uint32_t found_contingency_candidates_count = 0;
+        for (uint32_t version_count_index = 0; version_count_index < candidate_count; version_count_index++) {
+            if (candidates[version_count_index].count >= (REPLICA_COUNT + 1) / 2) {
+                for (uint32_t i = 0; i < REPLICA_COUNT; i++) {
+                    found_candidates[found_contingency_candidates_count].index_entry[i] = candidates[version_count_index].index_entry[i];
+                }
+                found_candidates[found_contingency_candidates_count++].version_number = candidates[version_count_index].version_number;
+            }
+        }
+
+        if (found_contingency_candidates_count == 0) {
+            if (ack_count == REPLICA_COUNT) {
+                // If we have gotten replies from all replicas and can not find a quorum, it is an error
+                ack_slot->promise->get_result = GET_RESULT_ERROR_NO_MATCH;
+                free(ack_slot->key);
+                printf("err no match\n");
+                return true;
+            } else {
+                // We did not find any candidates, so we do not want to consume yet wait for more acks to arrive
+                return false;
+            }
+        }
+
+        // Did find one or more quorums, lets try to get them.
+        for (uint32_t candidate_index = 0; candidate_index < found_contingency_candidates_count; candidate_index++) {
+            for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
+
+                // Check if this replica has that data
+                if (found_candidates[candidate_index].index_entry[replica_index].status == 0) continue;
+
+                // Now we have found a replica that has this candidate, ship it and continue with next c
+                // We could optimize it so that if multiple of these candidates were shipped to a single server
+                // we would switch to a vector dma transfer, but I think that the overhead of computing that outweighs the
+                // benefit, at least since we probably usually only have a single candidate
+                // TODO: This will make the load more heavy on the first replicas, should probably introduce some randomness
+                uint8_t key_len = (uint8_t) found_candidates[candidate_index].index_entry[replica_index].key_length;
+                uint32_t value_len = found_candidates[candidate_index].index_entry[replica_index].data_length;
+                ptrdiff_t offset = found_candidates[candidate_index].index_entry[replica_index].offset;
+
+                ack_slot_t *new_ack_slot = get_ack_slot_blocking(GET_PHASE2, key_len, value_len, 0, key_len + value_len + sizeof(uint32_t), found_candidates[candidate_index].index_entry[replica_index].version_number, ack_slot->promise);
+
+                new_ack_slot->header_slot_WRITE_ONLY->offset = (size_t) offset;
+                new_ack_slot->header_slot_WRITE_ONLY->return_offset = new_ack_slot->starting_ack_data_offset;
+                new_ack_slot->header_slot_WRITE_ONLY->key_length = key_len;
+                new_ack_slot->header_slot_WRITE_ONLY->value_length = value_len;
+                new_ack_slot->header_slot_WRITE_ONLY->version_number = ack_slot->version_number;
+                new_ack_slot->header_slot_WRITE_ONLY->replica_write_back_hint = replica_index;
+                new_ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_GET_PHASE2;
+
+                break;
+            }
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
+    // We only use the index 0 of the replica slots no matter the index, as this put was only sent to a single replica
+    if (ack_slot->replica_ack_instances[0]->replica_ack_type == REPLICA_NOT_ACKED) {
+        // Check if we have timed out
+        struct timespec end_p;
+        clock_gettime(CLOCK_MONOTONIC, &end_p);
+
+        if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= B3PGET_TIMEOUT_NS) {
+            ack_slot->promise->put_result = GET_RESULT_ERROR_TIMEOUT;
+            printf("TIMEOUT phase2!\n");
+            free(ack_slot->key);
+            pthread_mutex_lock(&ack_mutex);
+            oldest_ack_offset = (oldest_ack_offset + ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)) % ACK_REGION_DATA_SIZE;
+            pthread_mutex_unlock(&ack_mutex);
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    if (ack_slot->replica_ack_instances[0]->replica_ack_type != REPLICA_ACK_SUCCESS) {
+        fprintf(stderr, "Unhandled ack state\n");
+        printf(":(\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // First do verification
+    char *ack_data = ((char *) replica_ack) + ACK_REGION_SLOT_SIZE + ack_slot->starting_ack_data_offset;
+
+    uint32_t expected_hash = *((uint32_t *) (ack_data + ack_slot->key_len + ack_slot->value_len));
+    *((uint32_t *) (ack_data + ack_slot->key_len + ack_slot->value_len)) = ack_slot->version_number;
+
+    uint32_t hash = super_fast_hash(ack_data, (int) (ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)));
+    if (hash != expected_hash) {
+        ack_slot->promise->put_result = GET_RESULT_ERROR_NO_MATCH;
+        free(ack_slot->key);
+        printf(":( %u %u\n", hash, expected_hash);
+        pthread_mutex_lock(&ack_mutex);
+        oldest_ack_offset = (oldest_ack_offset + ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)) % ACK_REGION_DATA_SIZE;
+        pthread_mutex_unlock(&ack_mutex);
+        return true;
+    }
+
+    ack_slot->promise->data = malloc(ack_slot->value_len);
+    if (ack_slot->promise->data == NULL) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+
+    memcpy(ack_slot->promise->data, ack_data + ack_slot->key_len, ack_slot->value_len);
+    pthread_mutex_lock(&ack_mutex);
+    oldest_ack_offset = (oldest_ack_offset + ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)) % ACK_REGION_DATA_SIZE;
+    pthread_mutex_unlock(&ack_mutex);
+    ack_slot->promise->get_result = GET_RESULT_SUCCESS;
+    return true;
 }
