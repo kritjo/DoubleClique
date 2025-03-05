@@ -15,7 +15,7 @@
 
 static sci_desc_t sd;
 
-static put_promise_t *put(const char *key, uint8_t key_len, void *value, uint32_t value_len);
+static request_promise_t *put(const char *key, uint8_t key_len, void *value, uint32_t value_len);
 
 int main(int argc, char *argv[]) {
     if (argc < REPLICA_COUNT + 1) {
@@ -59,7 +59,7 @@ int main(int argc, char *argv[]) {
 
     struct timespec start, end;
 
-    put_promise_t *promise;
+    request_promise_t *promise;
     clock_gettime(CLOCK_MONOTONIC, &start);
     for (uint32_t i = 0; i < 200000; i++) {
         put(key, 4, sample_data, sizeof(sample_data));
@@ -109,7 +109,7 @@ int main(int argc, char *argv[]) {
 }
 
 // Caller must free returned promise
-static put_promise_t *put(const char *key, uint8_t key_len, void *value, uint32_t value_len) {
-    put_promise_t *promise = put_blocking_until_available_put_request_region_slot(key, key_len, value, value_len);
+static request_promise_t *put(const char *key, uint8_t key_len, void *value, uint32_t value_len) {
+    request_promise_t *promise = put_blocking_until_available_put_request_region_slot(key, key_len, value, value_len);
     return promise;
 }

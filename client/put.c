@@ -25,37 +25,16 @@ void init_put(sci_desc_t sd) {
     client_id = (uint8_t) node_id;
 }
 
-// Critical region function
-put_promise_t *put_blocking_until_available_put_request_region_slot(const char *key, uint8_t key_len, void *value, uint32_t value_len) {
-    // Check if it is actually in-flight
-    // TODO: sched_yield optimize?
-    while ((free_header_slot + 1) % MAX_REQUEST_SLOTS == oldest_header_slot); // This complains but I think using atomics should work TODO: try removing volatile
-
-    uint32_t my_header_slot = free_header_slot;
-    ack_slot_t *ack_slot = &ack_slots[my_header_slot];
-    free_header_slot = (free_header_slot + 1) % MAX_REQUEST_SLOTS;
-
-    ack_slot->header_slot_WRITE_ONLY = &request_region->header_slots[my_header_slot];
-
-    clock_gettime(CLOCK_MONOTONIC, &ack_slot->start_time);
-
-    put_promise_t *promise = malloc(sizeof(put_promise_t));
-    if (promise == NULL) {
-        perror("malloc");
-        exit(EXIT_FAILURE);
-    }
-    promise->result = PUT_PENDING;
-
-    ack_slot->promise = promise;
-    ack_slot->key_len = key_len;
-    ack_slot->value_len = value_len;
-    ack_slot->version_number = ((uint32_t) client_id) << 24 | version_number;
-    version_number = (version_number + 1) % MAX_VERSION_NUMBER;
-
+request_promise_t *put_blocking_until_available_put_request_region_slot(const char *key, uint8_t key_len, void *value, uint32_t value_len) {
     if (key_len + value_len > REQUEST_REGION_DATA_SIZE) {
         fprintf(stderr, "illegally large data\n");
         exit(EXIT_FAILURE);
     }
+
+    uint32_t my_version_number = ((uint32_t) client_id) << 24 | version_number;
+    version_number = (version_number + 1) % MAX_VERSION_NUMBER;
+    
+    ack_slot_t *ack_slot = get_ack_slot(PUT_PENDING, key_len, value_len, my_version_number);
 
     // Wait for enough space
     while (1) {
@@ -107,14 +86,14 @@ put_promise_t *put_blocking_until_available_put_request_region_slot(const char *
                                             (int) (key_len + value_len + sizeof(((header_slot_t *) 0)->version_number)));
     free(hash_data);
 
-    request_region->header_slots[my_header_slot].payload_hash = payload_hash;
-    request_region->header_slots[my_header_slot].offset = (size_t) starting_offset;
-    request_region->header_slots[my_header_slot].key_length = key_len;
-    request_region->header_slots[my_header_slot].value_length = value_len;
-    request_region->header_slots[my_header_slot].version_number = ack_slot->version_number;
-    request_region->header_slots[my_header_slot].status = HEADER_SLOT_USED_PUT;
+    ack_slot->header_slot_WRITE_ONLY->payload_hash = payload_hash;
+    ack_slot->header_slot_WRITE_ONLY->offset = (size_t) starting_offset;
+    ack_slot->header_slot_WRITE_ONLY->key_length = key_len;
+    ack_slot->header_slot_WRITE_ONLY->value_length = value_len;
+    ack_slot->header_slot_WRITE_ONLY->version_number = ack_slot->version_number;
+    ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_PUT;
 
-    return promise;
+    return ack_slot->promise;
 }
 
 void *ack_thread(__attribute__((unused)) void *_args) {
