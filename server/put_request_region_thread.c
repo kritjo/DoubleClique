@@ -38,27 +38,25 @@ void put(put_request_region_poller_thread_args_t *args, header_slot_t slot, uint
         exit(EXIT_FAILURE);
     }
 
-    for (uint32_t i = 0; i < slot.value_length; i++) {
-        data[i] = data_slot_start[offset];
-        offset = (offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
-    }
-
-    uint32_t value_hash = super_fast_hash(data, (int) slot.value_length);
-
     // TODO: This could be a function, shared with client
-    char *hash_data = malloc(sizeof(uint32_t) * 2);
+    char *hash_data = malloc(slot.key_length + slot.value_length + sizeof(((header_slot_t *) 0)->version_number));
     if (hash_data == NULL) {
         perror("malloc");
         exit(EXIT_FAILURE);
     }
 
-    // Copy key_hash into the first 4 bytes of hash_data
-    memcpy(hash_data, &key_hash, sizeof(uint32_t));
+    memcpy(hash_data, key, slot.key_length);
 
-    // Copy value_hash into the next 4 bytes of hash_data
-    memcpy(hash_data + sizeof(uint32_t), &value_hash, sizeof(uint32_t));
+    for (uint32_t i = 0; i < slot.value_length; i++) {
+        data[i] = data_slot_start[offset];
+        hash_data[i + slot.key_length] = data_slot_start[offset];
+        offset = (offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
+    }
 
-    uint32_t payload_hash = super_fast_hash(hash_data, sizeof(uint32_t) * 2);
+    memcpy(hash_data + slot.key_length + slot.value_length, &slot.version_number, sizeof(((header_slot_t *) 0)->version_number));
+
+    uint32_t payload_hash = super_fast_hash(hash_data, (int) (slot.key_length + slot.value_length +
+                                                              sizeof(((header_slot_t *) 0)->version_number)));
     free(hash_data);
 
     if (payload_hash != slot.payload_hash) {
@@ -209,7 +207,6 @@ int put_request_region_poller(void *arg) {
 
 static void send_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
                      sci_sequence_t put_ack_sequence, uint32_t version_number, enum replica_ack_type ack_type) {
-    printf("acking\n");
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
     replica_ack_instance->version_number = version_number;
     replica_ack_instance->replica_ack_type = ack_type;

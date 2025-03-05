@@ -144,6 +144,7 @@ put_promise_t *put_blocking_until_available_put_request_region_slot(const char *
     put_ack_slot->key_len = key_len;
     put_ack_slot->value_len = value_len;
     put_ack_slot->version_number = ((uint32_t) client_id) << 24 | version_number;
+    version_number = (version_number + 1) % MAX_VERSION_NUMBER;
 
     free_header_slot = (free_header_slot + 1) % MAX_PUT_REQUEST_SLOTS;
 
@@ -172,38 +173,34 @@ put_promise_t *put_blocking_until_available_put_request_region_slot(const char *
         replica_ack_instance->version_number = 0;
     }
 
-    version_number = (version_number + 1) % MAX_VERSION_NUMBER;
-
     uint32_t starting_offset = free_data_offset;
     volatile char *data_region_start = ((volatile char *) put_request_region) + sizeof(put_request_region_t);
 
-    char *hash_data = malloc(sizeof(uint32_t) * 2);
+    char *hash_data = malloc(key_len + value_len + sizeof(((header_slot_t *) 0)->version_number));
     if (hash_data == NULL) {
         perror("malloc");
         exit(EXIT_FAILURE);
     }
 
-    uint32_t key_hash = super_fast_hash(key, key_len);
     // First copy the key
     for (uint32_t i = 0; i < key_len; i++) {
+        hash_data[i] = key[i];
         data_region_start[free_data_offset] = key[i];
         free_data_offset = (free_data_offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
     }
 
-    uint32_t value_hash = super_fast_hash(value, (int) value_len);
     // Next copy the data
     for (uint32_t i = 0; i < value_len; i++) {
+        hash_data[i + key_len] = ((char *) value)[i];
         data_region_start[free_data_offset] = ((char *) value)[i];
         free_data_offset = (free_data_offset + 1) % PUT_REQUEST_REGION_DATA_SIZE;
     }
 
     // Copy key_hash into the first 4 bytes of hash_data
-    memcpy(hash_data, &key_hash, sizeof(uint32_t));
+    memcpy(hash_data + key_len + value_len, &put_ack_slot->version_number, sizeof(((header_slot_t *) 0)->version_number));
 
-    // Copy value_hash into the next 4 bytes of hash_data
-    memcpy(hash_data + sizeof(uint32_t), &value_hash, sizeof(uint32_t));
-
-    uint32_t payload_hash = super_fast_hash(hash_data, sizeof(uint32_t) * 2);
+    uint32_t payload_hash = super_fast_hash(hash_data,
+                                            (int) (key_len + value_len + sizeof(((header_slot_t *) 0)->version_number)));
     free(hash_data);
 
     put_request_region->header_slots[my_header_slot].payload_hash = payload_hash;
