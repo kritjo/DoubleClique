@@ -33,6 +33,7 @@ put_promise_t *put_blocking_until_available_put_request_region_slot(const char *
 
     uint32_t my_header_slot = free_header_slot;
     ack_slot_t *ack_slot = &ack_slots[my_header_slot];
+    free_header_slot = (free_header_slot + 1) % MAX_REQUEST_SLOTS;
 
     ack_slot->header_slot_WRITE_ONLY = &request_region->header_slots[my_header_slot];
 
@@ -50,8 +51,6 @@ put_promise_t *put_blocking_until_available_put_request_region_slot(const char *
     ack_slot->value_len = value_len;
     ack_slot->version_number = ((uint32_t) client_id) << 24 | version_number;
     version_number = (version_number + 1) % MAX_VERSION_NUMBER;
-
-    free_header_slot = (free_header_slot + 1) % MAX_REQUEST_SLOTS;
 
     if (key_len + value_len > REQUEST_REGION_DATA_SIZE) {
         fprintf(stderr, "illegally large data\n");

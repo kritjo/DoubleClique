@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include "sisci_glob_defs.h"
 #include "index_data_protocol.h"
+#include "main.h"
 
 #define GET_RECEIVE_SEG_SIZE MAX_SIZE_ELEMENT * REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET
 
@@ -49,18 +50,6 @@ typedef struct {
     const char *error_message;
     _Atomic bool contingency_fetch_started;
 } pending_get_status_t;
-
-enum get_return_status {
-    GET_RETURN_SUCCESS,
-    GET_RETURN_ERROR
-};
-
-typedef struct {
-    enum get_return_status status;
-    uint32_t data_length;
-    void *data;
-    const char *error_message;
-} get_return_t;
 
 typedef struct {
     uint32_t version_number;

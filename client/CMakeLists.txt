@@ -8,7 +8,9 @@ add_executable(client
         request_region_connection.c
         request_region_connection.h
         ack_region.c
-        ack_region.h)
+        ack_region.h
+        b3p_get.c
+        b3p_get.h)
 
 target_link_libraries(client PRIVATE commonLib)
 target_link_libraries(client PRIVATE SISCI)
