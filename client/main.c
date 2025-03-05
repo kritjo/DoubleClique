@@ -10,6 +10,7 @@
 #include "super_fast_hash.h"
 #include "2_phase_read_get.h"
 #include "put.h"
+#include "request_region_connection.h"
 
 static sci_desc_t sd;
 
@@ -42,6 +43,7 @@ int main(int argc, char *argv[]) {
         replica_node_ids[replica_index] = (uint8_t) replica_node_id;
     }
 
+    connect_to_request_region(sd);
     init_2_phase_read_get(sd, replica_node_ids, false);
 
     unsigned char sample_data[8];
