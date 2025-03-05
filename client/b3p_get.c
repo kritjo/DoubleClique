@@ -7,6 +7,9 @@
 #include "super_fast_hash.h"
 #include "2_phase_read_get.h"
 
+void send_phase_2_get(uint32_t version_number, uint32_t candidate_index,
+                      uint32_t replica_index, uint8_t key_len, uint32_t value_len, ptrdiff_t server_data_offset, request_promise_t *promise);
+
 request_promise_t *get_b3p(const char *key, uint8_t key_len) {
     // First we need to get a header slot
     // Then we need to broadcast the request
@@ -157,17 +160,10 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                 // TODO: This will make the load more heavy on the first replicas, should probably introduce some randomness
                 uint8_t key_len = (uint8_t) found_candidates[candidate_index].index_entry[replica_index].key_length;
                 uint32_t value_len = found_candidates[candidate_index].index_entry[replica_index].data_length;
-                ptrdiff_t offset = found_candidates[candidate_index].index_entry[replica_index].offset;
+                ptrdiff_t server_data_offset = found_candidates[candidate_index].index_entry[replica_index].offset;
+                uint32_t version_number = found_candidates[candidate_index].index_entry[replica_index].version_number;
 
-                ack_slot_t *new_ack_slot = get_ack_slot_blocking(GET_PHASE2, key_len, value_len, 0, key_len + value_len + sizeof(uint32_t), found_candidates[candidate_index].index_entry[replica_index].version_number, ack_slot->promise);
-
-                new_ack_slot->header_slot_WRITE_ONLY->offset = (size_t) offset;
-                new_ack_slot->header_slot_WRITE_ONLY->return_offset = new_ack_slot->starting_ack_data_offset;
-                new_ack_slot->header_slot_WRITE_ONLY->key_length = key_len;
-                new_ack_slot->header_slot_WRITE_ONLY->value_length = value_len;
-                new_ack_slot->header_slot_WRITE_ONLY->version_number = ack_slot->version_number;
-                new_ack_slot->header_slot_WRITE_ONLY->replica_write_back_hint = replica_index;
-                new_ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_GET_PHASE2;
+                send_phase_2_get(version_number, candidate_index, replica_index, key_len, value_len, server_data_offset, ack_slot->promise);
 
                 break;
             }
@@ -234,4 +230,17 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     pthread_mutex_unlock(&ack_mutex);
     ack_slot->promise->get_result = GET_RESULT_SUCCESS;
     return true;
+}
+
+void send_phase_2_get(uint32_t version_number, uint32_t candidate_index,
+                      uint32_t replica_index, uint8_t key_len, uint32_t value_len, ptrdiff_t server_data_offset, request_promise_t *promise) {
+    ack_slot_t *new_ack_slot = get_ack_slot_blocking(GET_PHASE2, key_len, value_len, 0, key_len + value_len + sizeof(uint32_t), version_number, promise);
+
+    new_ack_slot->header_slot_WRITE_ONLY->offset = (size_t) server_data_offset;
+    new_ack_slot->header_slot_WRITE_ONLY->return_offset = new_ack_slot->starting_ack_data_offset;
+    new_ack_slot->header_slot_WRITE_ONLY->key_length = key_len;
+    new_ack_slot->header_slot_WRITE_ONLY->value_length = value_len;
+    new_ack_slot->header_slot_WRITE_ONLY->version_number = version_number;
+    new_ack_slot->header_slot_WRITE_ONLY->replica_write_back_hint = replica_index;
+    new_ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_GET_PHASE2;
 }
