@@ -48,6 +48,7 @@ int main(int argc, char *argv[]) {
     init_ack_region(sd);
     connect_to_request_region(sd);
     init_2_phase_read_get(sd, replica_node_ids, false);
+    init_get_b3p();
 
     unsigned char sample_data[8];
 

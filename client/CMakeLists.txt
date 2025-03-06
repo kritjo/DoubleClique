@@ -10,7 +10,9 @@ add_executable(client
         ack_region.c
         ack_region.h
         b3p_get.c
-        b3p_get.h)
+        b3p_get.h
+        phase_2_queue.c
+        phase_2_queue.h)
 
 target_link_libraries(client PRIVATE commonLib)
 target_link_libraries(client PRIVATE SISCI)

@@ -6,9 +6,15 @@
 #include "request_region_connection.h"
 #include "super_fast_hash.h"
 #include "2_phase_read_get.h"
+#include "phase_2_queue.h"
 
-void send_phase_2_get(uint32_t version_number, uint32_t candidate_index,
-                      uint32_t replica_index, uint8_t key_len, uint32_t value_len, ptrdiff_t server_data_offset, request_promise_t *promise);
+static void *phase2_thread(__attribute__((unused)) void *_args);
+
+void init_get_b3p(void) {
+    queue_init();
+    pthread_t id;
+    pthread_create(&id, NULL, phase2_thread, NULL);
+}
 
 request_promise_t *get_b3p(const char *key, uint8_t key_len) {
     // First we need to get a header slot
@@ -163,7 +169,15 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                 ptrdiff_t server_data_offset = found_candidates[candidate_index].index_entry[replica_index].offset;
                 uint32_t version_number = found_candidates[candidate_index].index_entry[replica_index].version_number;
 
-                send_phase_2_get(version_number, candidate_index, replica_index, key_len, value_len, server_data_offset, ack_slot->promise);
+                queue_item_t queue_item;
+                queue_item.version_number = version_number;
+                queue_item.replica_index = replica_index;
+                queue_item.key_len = key_len;
+                queue_item.value_len = value_len;
+                queue_item.server_data_offset = server_data_offset;
+                queue_item.promise = ack_slot->promise;
+
+                enqueue(queue_item);
 
                 break;
             }
@@ -232,8 +246,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     return true;
 }
 
-void send_phase_2_get(uint32_t version_number, uint32_t candidate_index,
-                      uint32_t replica_index, uint8_t key_len, uint32_t value_len, ptrdiff_t server_data_offset, request_promise_t *promise) {
+void send_phase_2_get(uint32_t version_number, uint32_t replica_index, uint8_t key_len, uint32_t value_len, ptrdiff_t server_data_offset, request_promise_t *promise) {
     ack_slot_t *new_ack_slot = get_ack_slot_blocking(GET_PHASE2, key_len, value_len, 0, key_len + value_len + sizeof(uint32_t), version_number, promise);
 
     new_ack_slot->header_slot_WRITE_ONLY->offset = (size_t) server_data_offset;
@@ -243,4 +256,18 @@ void send_phase_2_get(uint32_t version_number, uint32_t candidate_index,
     new_ack_slot->header_slot_WRITE_ONLY->version_number = version_number;
     new_ack_slot->header_slot_WRITE_ONLY->replica_write_back_hint = replica_index;
     new_ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_GET_PHASE2;
+}
+
+static void *phase2_thread(__attribute__((unused)) void *_args) {
+    queue_item_t queue_item;
+    while (1) {
+        queue_item = dequeue();
+        send_phase_2_get(
+                queue_item.version_number,
+                queue_item.replica_index,
+                queue_item.key_len,
+                queue_item.value_len,
+                queue_item.server_data_offset,
+                queue_item.promise);
+    }
 }
