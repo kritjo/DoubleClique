@@ -265,7 +265,7 @@ get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
                          replica_dma_queues_main[replica_index],
                          NO_FLAGS);
                 else {
-                    pthread_cancel(thread_ids[replica_index]);
+                    pthread_join(thread_ids[replica_index], NULL);
                 }
             }
 
@@ -273,6 +273,7 @@ get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
             return_struct->data_length = 0;
             return_struct->data = NULL;
             return_struct->error_message = TIMEOUT_MSG;
+            pthread_mutex_unlock(&get_in_progress);
 
             return return_struct;
         }
@@ -308,8 +309,10 @@ get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
         SEOE(SCIAbortDMAQueue,
              replica_dma_queues_secondary[replica_index],
              NO_FLAGS);
-    } else for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
-        pthread_cancel(thread_ids[replica_index]);
+    } else {
+        for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
+            pthread_join(thread_ids[replica_index], NULL);
+        }
     }
 
     pthread_mutex_unlock(&get_in_progress);
@@ -317,7 +320,6 @@ get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
 }
 
 static void *pio_read_thread(void *arg) {
-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
     get_index_response_args_t *args = (get_index_response_args_t *) arg;
 
     SEOE(SCIMemCpy,
@@ -355,8 +357,11 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
                    sizeof(*slot));
         }
     } else {
-        fprintf(stderr, "not ok index fetch: %s\n", SCIGetErrorString(status));
-        // We let this fall through as it will be handled by slots_length being 0
+        pending_get_status.data_length = 0;
+        pending_get_status.data = NULL;
+        pending_get_status.status = COMPLETED_ERROR;
+        pending_get_status.error_message = SCIGetErrorString(status);
+        return SCI_CALLBACK_CONTINUE;
     }
 
     pthread_mutex_lock(&completed_index_fetches_mutex);
@@ -385,6 +390,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
             // If we either did not find any slots in the preferred replica or if the fetch failed, defer all to the
             // contingency fetch. This will also mean that we try another backend, as this replica does not have any
             // candidates
+            printf("no slots w hash\n");
             contingency_backend_fetch(NULL, 0, args->key, args->key_hash, args->key_len);
             return SCI_CALLBACK_CONTINUE;
         }
@@ -434,6 +440,7 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
     uint32_t tried_vnrs[INDEX_SLOTS_PR_BUCKET];
 
     if (status != SCI_ERR_OK) {
+        printf("status not ok\n");
         contingency_backend_fetch(NULL, 0, args->key, args->key_hash, args->key_len);
         return SCI_CALLBACK_CONTINUE;
     }
@@ -459,18 +466,26 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
     }
 
     if (version_number == -1) {
+        printf("novnr\n");
         contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key, args->key_hash, args->key_len);
         return SCI_CALLBACK_CONTINUE;
     }
 
-    // No need in timing out this, if we don't exit this loop, the quorum can not be gotten
-    while (1) {
+    struct timespec ts_pre;
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts_pre);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    while (((ts.tv_sec - ts_pre.tv_sec) * 1000000000L + (ts.tv_nsec - ts_pre.tv_nsec)) < GET_TIMEOUT_NS) {
         pthread_mutex_lock(&completed_index_fetches_mutex);
         if (completed_fetches_of_index >= (REPLICA_COUNT + 1) / 2) {
             pthread_mutex_unlock(&completed_index_fetches_mutex);
             break;
         }
         pthread_mutex_unlock(&completed_index_fetches_mutex);
+
+        clock_gettime(CLOCK_MONOTONIC, &ts);
     }
 
     uint8_t correct_vnr_count = 0;
