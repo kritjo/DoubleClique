@@ -9,6 +9,7 @@
 
 volatile request_region_t *request_region;
 sci_sequence_t request_sequence;
+sci_map_t request_map;
 
 static uint8_t client_id;
 
@@ -16,7 +17,6 @@ void connect_to_request_region(sci_desc_t sd) {
     sci_error_t sci_error;
 
     sci_remote_segment_t put_request_segment;
-    sci_map_t put_request_map;
 
     SEOE(SCIConnectSegment,
          sd,
@@ -30,7 +30,7 @@ void connect_to_request_region(sci_desc_t sd) {
          SCI_FLAG_BROADCAST);
 
     request_region = (volatile request_region_t*) SCIMapRemoteSegment(put_request_segment,
-                                                                      &put_request_map,
+                                                                      &request_map,
                                                                       NO_OFFSET,
                                                                       REQUEST_REGION_SIZE,
                                                                       NO_SUGGESTED_ADDRESS,
@@ -55,7 +55,7 @@ void connect_to_request_region(sci_desc_t sd) {
     }
 
     SEOE(SCICreateMapSequence,
-         put_request_map,
+         request_map,
          &request_sequence,
          NO_FLAGS);
 

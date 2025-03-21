@@ -6,6 +6,7 @@
 
 extern volatile request_region_t *request_region;
 extern sci_sequence_t request_sequence;
+extern sci_map_t request_map;
 
 void connect_to_request_region(sci_desc_t sd);
 
