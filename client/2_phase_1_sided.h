@@ -1,5 +1,5 @@
-#ifndef DOUBLECLIQUE_2_PHASE_READ_GET_H
-#define DOUBLECLIQUE_2_PHASE_READ_GET_H
+#ifndef DOUBLECLIQUE_2_PHASE_1_SIDED_H
+#define DOUBLECLIQUE_2_PHASE_1_SIDED_H
 
 #include <sisci_types.h>
 #include <stdint.h>
@@ -7,11 +7,12 @@
 #include "sisci_glob_defs.h"
 #include "index_data_protocol.h"
 #include "main.h"
+#include "ack_region.h"
 
 #define GET_RECEIVE_SEG_SIZE MAX_SIZE_ELEMENT * REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET
 
 #define GetReceiveSegmentIdBase 42
-#define GET_TIMEOUT_NS 10000000
+#define GET_TIMEOUT_1_SIDED_NS 10000000
 #define CONTINGENCY_WAIT_FOR_INDEX_FETCHES_TIMEOUT_NS 100000
 
 typedef struct {
@@ -36,18 +37,10 @@ typedef struct {
     index_entry_t slots[INDEX_SLOTS_PR_BUCKET];
 } stored_index_data_t;
 
-enum get_status {
-    NOT_POSTED,
-    POSTED, // Meaning that the request has been sent to ALL replicas
-    COMPLETED_SUCCESS,
-    COMPLETED_ERROR
-};
-
 typedef struct {
-    _Atomic(enum get_status) status;
+    _Atomic(enum get_request_promise_status) status;
     uint32_t data_length;
     void *data;
-    const char *error_message;
     _Atomic bool contingency_fetch_started;
 } pending_get_status_t;
 
@@ -72,8 +65,8 @@ typedef struct {
 } contingency_fetch_completed_args_t;
 
 
-void init_2_phase_read_get(sci_desc_t sd, uint8_t *replica_node_ids, bool use_dma_);
-get_return_t *get_2_phase_read(const char *key, uint8_t key_len);
+void init_2_phase_1_sided_get(sci_desc_t sd, uint8_t *replica_node_ids, bool use_dma_);
+request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len);
 
 static sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__((unused)) sci_dma_queue_t queue, sci_error_t status);
 static sci_callback_action_t preferred_data_fetch_completed_callback(void IN *arg,
@@ -89,4 +82,4 @@ static sci_callback_action_t contingency_data_fetch_completed_callback(void IN *
 #define CONTINGENCY_ERROR_MSG "There was an error receiving the data during the the contingency fetch"
 #define TIMEOUT_MSG "The request timed out"
 
-#endif //DOUBLECLIQUE_2_PHASE_READ_GET_H
+#endif //DOUBLECLIQUE_2_PHASE_1_SIDED_H

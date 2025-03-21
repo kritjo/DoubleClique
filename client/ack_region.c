@@ -5,7 +5,7 @@
 #include "index_data_protocol.h"
 #include "request_region_connection.h"
 #include "put.h"
-#include "b3p_get.h"
+#include "2_phase_2_sided.h"
 
 static pthread_mutex_t header_mutex;
 static uint32_t free_header_slot = 0;

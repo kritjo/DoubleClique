@@ -1,22 +1,22 @@
 #include <malloc.h>
 #include <stdlib.h>
 #include <string.h>
-#include "b3p_get.h"
+#include "2_phase_2_sided.h"
 #include "ack_region.h"
 #include "request_region_connection.h"
 #include "super_fast_hash.h"
-#include "2_phase_read_get.h"
+#include "2_phase_1_sided.h"
 #include "phase_2_queue.h"
 
 static void *phase2_thread(__attribute__((unused)) void *_args);
 
-void init_get_b3p(void) {
+void init_2_phase_2_sided_get(void) {
     queue_init();
     pthread_t id;
     pthread_create(&id, NULL, phase2_thread, NULL);
 }
 
-request_promise_t *get_b3p(const char *key, uint8_t key_len) {
+request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
     // First we need to get a header slot
     // Then we need to broadcast the request
     // Then wait until we have a quorum
@@ -75,7 +75,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
     struct timespec end_p;
     clock_gettime(CLOCK_MONOTONIC, &end_p);
 
-    if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= B3PGET_TIMEOUT_NS) {
+    if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
         ack_slot->promise->get_result = GET_RESULT_ERROR_TIMEOUT;
         free(ack_slot->key);
         printf("TIMEOUT phase1!\n");
@@ -196,7 +196,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
         struct timespec end_p;
         clock_gettime(CLOCK_MONOTONIC, &end_p);
 
-        if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= B3PGET_TIMEOUT_NS) {
+        if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
             ack_slot->promise->put_result = GET_RESULT_ERROR_TIMEOUT;
             printf("TIMEOUT phase2!\n");
             free(ack_slot->key);

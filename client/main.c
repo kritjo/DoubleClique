@@ -8,11 +8,11 @@
 #include "sisci_glob_defs.h"
 
 #include "super_fast_hash.h"
-#include "2_phase_read_get.h"
+#include "2_phase_1_sided.h"
 #include "put.h"
 #include "request_region_connection.h"
 #include "ack_region.h"
-#include "b3p_get.h"
+#include "2_phase_2_sided.h"
 
 static sci_desc_t sd;
 
@@ -47,8 +47,8 @@ int main(int argc, char *argv[]) {
 
     init_ack_region(sd);
     connect_to_request_region(sd);
-    init_2_phase_read_get(sd, replica_node_ids, false);
-    init_get_b3p();
+    init_2_phase_1_sided_get(sd, replica_node_ids, false);
+    init_2_phase_2_sided_get();
 
     unsigned char sample_data[8];
 
@@ -78,29 +78,29 @@ int main(int argc, char *argv[]) {
     printf("Put result: %u\n", promise->put_result);
 
 
-    get_return_t *return_struct2 = get_2_phase_read(key, 4);
+    request_promise_t *promise2 = get_2_phase_1_sided(key, 4);
 
-    if (return_struct2->status == GET_RETURN_SUCCESS) printf("At place 7 of get with data_2 length %u: %u\n", return_struct2->data_length, ((unsigned char *) return_struct2->data)[7]);
-    else printf("get error: %s\n", return_struct2->error_message);
+    if (promise2->get_result == GET_RESULT_SUCCESS) printf("At place 7 of get with data_2 length %u: %u\n", promise2->data_len, ((unsigned char *) promise2->data)[7]);
+    else printf("get error: %u\n", promise2->get_result);
 
 
-    get_return_t *return_struct1 = get_2_phase_read(key2, 5);
-    if (return_struct1->status == GET_RETURN_SUCCESS) printf("At place 0 of get with data length %u: %u\n", return_struct1->data_length , *(uint32_t *) return_struct1->data);
+    request_promise_t *promise1 = get_2_phase_1_sided(key2, 5);
+    if (promise1->get_result == GET_RESULT_SUCCESS) printf("At place 0 of get with data length %u: %u\n", promise1->data_len , *(uint32_t *) promise1->data);
 
-    free(return_struct1->data);
-    free(return_struct2->data);
-    free(return_struct1);
-    free(return_struct2);
+    free(promise1->data);
+    free(promise2->data);
+    free(promise1);
+    free(promise2);
 
     clock_gettime(CLOCK_MONOTONIC, &start);
     for (uint32_t i = 0; i < 20; i++) {
-        return_struct1 = get_2_phase_read(key2, 5);
-        return_struct2 = get_2_phase_read(key, 4);
+        promise1 = get_2_phase_1_sided(key2, 5);
+        promise2 = get_2_phase_1_sided(key, 4);
 
-        free(return_struct1->data);
-        free(return_struct2->data);
-        free(return_struct1);
-        free(return_struct2);
+        free(promise1->data);
+        free(promise2->data);
+        free(promise1);
+        free(promise2);
     }
     clock_gettime(CLOCK_MONOTONIC, &end);
     printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / 20);
@@ -108,14 +108,14 @@ int main(int argc, char *argv[]) {
 
     clock_gettime(CLOCK_MONOTONIC, &start);
     for (uint32_t i = 0; i < 200; i++) {
-        promise = get_b3p(key2, 5); // Note that data should really be freed but is not
-        promise = get_b3p(key, 4);
+        promise = get_2_phase_2_sided(key2, 5); // Note that data should really be freed but is not
+        promise = get_2_phase_2_sided(key, 4);
     }
     while (promise->get_result == GET_PENDING);
     clock_gettime(CLOCK_MONOTONIC, &end);
     printf("Get b3p on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / 400);
 
-    promise = get_b3p(key, 4);
+    promise = get_2_phase_2_sided(key, 4);
     printf("main promise %p\n", (void *) promise);
     while (promise->get_result == GET_PENDING);
     if (promise->get_result == GET_RESULT_SUCCESS) {

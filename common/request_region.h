@@ -12,6 +12,9 @@
 #define MAX_REQUEST_SLOTS (PIPE_SIZE/MIN_SIZE_ELEMENT)
 #define REQUEST_SEGMENT_ID 1
 
+#define MAX_VERSION_NUMBER 0x1000000
+// The largest version number is 2**24 as the top 8 bits are used for the replica node id
+
 typedef enum {
     REQUEST_REGION_INACTIVE,
     PUT_REQUEST_REGION_ACTIVE
@@ -35,9 +38,6 @@ enum header_slot_status {
     HEADER_SLOT_USED_GET_PHASE1,
     HEADER_SLOT_USED_GET_PHASE2
 };
-
-#define MAX_VERSION_NUMBER 0x1000000
-// The largest version number is 2**24 as the top 8 bits are used for the replica node id
 
 typedef struct {
     uint8_t key_length;

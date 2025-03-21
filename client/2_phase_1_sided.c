@@ -1,4 +1,4 @@
-#include "2_phase_read_get.h"
+#include "2_phase_1_sided.h"
 
 #include "main.h"
 
@@ -55,7 +55,7 @@ static void *pio_read_thread(void *arg);
 
 #define NEXT_MULTIPLE_OF_FOUR_UNSIGNED(n) ((n + 3) & ~3U)
 
-void init_2_phase_read_get(sci_desc_t sd, uint8_t *replica_node_ids, bool use_dma_) {
+void init_2_phase_1_sided_get(sci_desc_t sd, uint8_t *replica_node_ids, bool use_dma_) {
     sci_error_t sci_error;
 
     use_dma = use_dma_;
@@ -176,9 +176,9 @@ void init_2_phase_read_get(sci_desc_t sd, uint8_t *replica_node_ids, bool use_dm
 // Always blocking semantics as we return the data, you need to free the data and return struct itself after use.
 // You need to free the data even though there is an error and data length is 0
 // Invariant: all dma queues is postable
-get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
+request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
     pthread_mutex_lock(&get_in_progress);
-    pending_get_status.status = NOT_POSTED;
+    pending_get_status.status = GET_PENDING;
     pending_get_status.data_length = 0;
     pending_get_status.data = NULL;
     pending_get_status.contingency_fetch_started = false;
@@ -237,10 +237,9 @@ get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
         }
 
         // Only set on first iterations, otherwise we could race COMPLETED/POSTED
-        if (replica_index == 0) pending_get_status.status = POSTED;
     }
 
-    get_return_t *return_struct = malloc(sizeof(get_return_t));
+    request_promise_t *return_struct = malloc(sizeof(request_promise_t));
     if (return_struct == NULL) {
         perror("malloc");
         exit(EXIT_FAILURE);
@@ -253,9 +252,9 @@ get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
 
     clock_gettime(CLOCK_MONOTONIC, &ts_pre);
 
-    while (pending_get_status.status == POSTED) {
+    while (pending_get_status.status == GET_PENDING) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
-        if (((ts.tv_sec - ts_pre.tv_sec) * 1000000000L + (ts.tv_nsec - ts_pre.tv_nsec)) > GET_TIMEOUT_NS) {
+        if (((ts.tv_sec - ts_pre.tv_sec) * 1000000000L + (ts.tv_nsec - ts_pre.tv_nsec)) > GET_TIMEOUT_1_SIDED_NS) {
             // Timeout!
             printf("TIMEOUT GET_PHASE1!\n");
             for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
@@ -269,10 +268,9 @@ get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
                 }
             }
 
-            return_struct->status = GET_RETURN_ERROR;
-            return_struct->data_length = 0;
+            return_struct->get_result = GET_RESULT_ERROR_TIMEOUT;
+            return_struct->data_len = 0;
             return_struct->data = NULL;
-            return_struct->error_message = TIMEOUT_MSG;
             pthread_mutex_unlock(&get_in_progress);
 
             return return_struct;
@@ -280,24 +278,20 @@ get_return_t *get_2_phase_read(const char *key, uint8_t key_len) {
     }
 
     switch (pending_get_status.status) {
-        case COMPLETED_SUCCESS:
-            return_struct->status = GET_RETURN_SUCCESS;
-            return_struct->data_length = pending_get_status.data_length;
+        case GET_RESULT_SUCCESS:
+            return_struct->get_result = GET_RESULT_SUCCESS;
+            return_struct->data_len = pending_get_status.data_length;
             return_struct->data = pending_get_status.data;
-            return_struct->error_message = NO_ERROR_MSG;
             break;
-        case COMPLETED_ERROR:
-            return_struct->status = GET_RETURN_ERROR;
-            return_struct->data_length = 0;
-            return_struct->data = NULL;
-            return_struct->error_message = pending_get_status.error_message;
-            break;
-        case NOT_POSTED:
-        case POSTED:
-        default:
-            fprintf(stderr, "Got illegal status from pending_get_status\n");
+        case GET_PENDING:
             free(return_struct);
+            fprintf(stderr, "Got illegal status from pending_get_status\n");
             exit(EXIT_FAILURE);
+        default:
+            return_struct->get_result = pending_get_status.status;
+            return_struct->data_len = 0;
+            return_struct->data = NULL;
+            break;
     }
 
     // Need to abort all DMA queues, so that a callback from a previous fetch does not trigger fuckery in a subsequent one
@@ -359,8 +353,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
     } else {
         pending_get_status.data_length = 0;
         pending_get_status.data = NULL;
-        pending_get_status.status = COMPLETED_ERROR;
-        pending_get_status.error_message = SCIGetErrorString(status);
+        pending_get_status.status = GET_RESULT_ERROR_TRANSFER;
         return SCI_CALLBACK_CONTINUE;
     }
 
@@ -440,7 +433,7 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
     uint32_t tried_vnrs[INDEX_SLOTS_PR_BUCKET];
 
     if (status != SCI_ERR_OK) {
-        printf("status not ok\n");
+        printf("failed preferred: %s\n", SCIGetErrorString(status));
         contingency_backend_fetch(NULL, 0, args->key, args->key_hash, args->key_len);
         return SCI_CALLBACK_CONTINUE;
     }
@@ -477,7 +470,7 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
     clock_gettime(CLOCK_MONOTONIC, &ts_pre);
     clock_gettime(CLOCK_MONOTONIC, &ts);
 
-    while (((ts.tv_sec - ts_pre.tv_sec) * 1000000000L + (ts.tv_nsec - ts_pre.tv_nsec)) < GET_TIMEOUT_NS) {
+    while (((ts.tv_sec - ts_pre.tv_sec) * 1000000000L + (ts.tv_nsec - ts_pre.tv_nsec)) < GET_TIMEOUT_1_SIDED_NS) {
         pthread_mutex_lock(&completed_index_fetches_mutex);
         if (completed_fetches_of_index >= (REPLICA_COUNT + 1) / 2) {
             pthread_mutex_unlock(&completed_index_fetches_mutex);
@@ -516,7 +509,7 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
         }
 
         memcpy(pending_get_status.data, data_slot + args->key_len, pending_get_status.data_length);
-        pending_get_status.status = COMPLETED_SUCCESS;
+        pending_get_status.status = GET_RESULT_SUCCESS;
 
     } else {
         contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key, args->key_hash, args->key_len);
@@ -622,8 +615,7 @@ contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_t
         // Did not find a quorum, fail the fetch
         pending_get_status.data_length = 0;
         pending_get_status.data = NULL;
-        pending_get_status.status = COMPLETED_ERROR;
-        pending_get_status.error_message = NO_INDEX_ENTRIES_MSG;
+        pending_get_status.status = GET_RESULT_ERROR_NO_MATCH;
         return;
     }
 
@@ -704,6 +696,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
     pthread_mutex_unlock(&completed_contingency_fetches_mutex);
 
     if (status != SCI_ERR_OK) {
+        fprintf(stderr, "not ok contingency fetch: %s\n", SCIGetErrorString(status));
         pthread_mutex_lock(&completed_contingency_fetches_mutex);
 
         uint32_t completed_contingency_fetches_count = 0;
@@ -715,11 +708,9 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         pthread_mutex_unlock(&completed_contingency_fetches_mutex);
 
         if (completed_contingency_fetches_count == args->found_contingency_candidates_count) {
-            fprintf(stderr, "not ok contingency fetch: %s\n", SCIGetErrorString(status));
             pending_get_status.data_length = 0;
             pending_get_status.data = 0;
-            pending_get_status.status = COMPLETED_ERROR;
-            pending_get_status.error_message = CONTINGENCY_ERROR_MSG;
+            pending_get_status.status = GET_RESULT_ERROR_TRANSFER;
         }
 
         return SCI_CALLBACK_CONTINUE;
@@ -740,13 +731,12 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         if (payload_hash != expected_payload_hash) {
             pending_get_status.data_length = 0;
             pending_get_status.data = 0;
-            pending_get_status.status = COMPLETED_ERROR;
-            pending_get_status.error_message = NO_DATA_MATCH_MSG;
+            pending_get_status.status = GET_RESULT_ERROR_NO_MATCH;
             return SCI_CALLBACK_CONTINUE;
         }
 
         memcpy(pending_get_status.data, slot + args->index_entry.key_length, pending_get_status.data_length);
-        pending_get_status.status = COMPLETED_SUCCESS;
+        pending_get_status.status = GET_RESULT_SUCCESS;
     } else {
         // No match, if we have received all set error, if not just fall through and let another thread handle it
         pthread_mutex_lock(&completed_contingency_fetches_mutex);
@@ -761,8 +751,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         if (completed_contingency_fetches_count == args->found_contingency_candidates_count) {
             pending_get_status.data_length = 0;
             pending_get_status.data = 0;
-            pending_get_status.status = COMPLETED_ERROR;
-            pending_get_status.error_message = NO_DATA_MATCH_MSG;
+            pending_get_status.status = GET_RESULT_ERROR_NO_MATCH;
         }
     }
 

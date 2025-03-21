@@ -19,7 +19,8 @@ enum get_request_promise_status {
     GET_PENDING,
     GET_RESULT_SUCCESS,
     GET_RESULT_ERROR_NO_MATCH,
-    GET_RESULT_ERROR_TIMEOUT
+    GET_RESULT_ERROR_TIMEOUT,
+    GET_RESULT_ERROR_TRANSFER
 };
 
 typedef struct {
