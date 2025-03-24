@@ -216,7 +216,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
         clock_gettime(CLOCK_MONOTONIC, &end_p);
 
         if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
-            ack_slot->promise->put_result = GET_RESULT_ERROR_TIMEOUT;
+            ack_slot->promise->get_result = GET_RESULT_ERROR_TIMEOUT;
             free(ack_slot->key);
             pthread_mutex_lock(&ack_mutex);
             oldest_ack_offset = (oldest_ack_offset + ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)) % ACK_REGION_DATA_SIZE;
@@ -240,7 +240,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
 
     uint32_t hash = super_fast_hash(ack_data, (int) (ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)));
     if (hash != expected_hash) {
-        ack_slot->promise->put_result = GET_RESULT_ERROR_NO_MATCH;
+        ack_slot->promise->get_result = GET_RESULT_ERROR_NO_MATCH;
         free(ack_slot->key);
         pthread_mutex_lock(&ack_mutex);
         oldest_ack_offset = (oldest_ack_offset + ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)) % ACK_REGION_DATA_SIZE;
