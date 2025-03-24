@@ -6,14 +6,18 @@
 #include "request_region_connection.h"
 #include "put.h"
 #include "2_phase_2_sided.h"
+#include "phase_2_queue.h"
 
 static pthread_mutex_t header_mutex;
 static uint32_t free_header_slot = 0;
 static uint32_t oldest_header_slot = 0;
 
-pthread_mutex_t ack_mutex;
+static pthread_mutex_t ack_mutex;
 static uint32_t free_ack_offset = 0;
-uint32_t oldest_ack_offset = 0;
+static uint32_t oldest_ack_offset = 0;
+
+static pthread_mutex_t get_2_sided_mutex;
+static uint32_t current_get_2_sided_requests = 0;
 
 static pthread_mutex_t data_mutex;
 static uint32_t free_data_offset = 0;
@@ -64,32 +68,43 @@ void init_ack_region(sci_desc_t sd) {
     pthread_mutex_init(&data_mutex, NULL);
     pthread_mutex_init(&ack_mutex, NULL);
     pthread_mutex_init(&header_mutex, NULL);
+    pthread_mutex_init(&get_2_sided_mutex, NULL);
 }
 
 // Critical region function
 ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_len, uint32_t value_len, uint32_t header_data_length, uint32_t ack_data_length, uint32_t version_number, request_promise_t *promise) {
+    if (request_type == GET_PHASE1) {
+        bool available_get_queue_space = false;
+        while (!available_get_queue_space) {
+            pthread_mutex_lock(&get_2_sided_mutex);
+            available_get_queue_space = current_get_2_sided_requests < MAX_SIMULTANEOUS_GET_REQUESTS;
+            if (available_get_queue_space) {
+                current_get_2_sided_requests++;
+            }
+            pthread_mutex_unlock(&get_2_sided_mutex);
+        }
+    }
 
-    bool loop = true;
-    while (loop) {
+    bool available_slot = false;
+    ack_slot_t *ack_slot;
+    while (!available_slot) {
         pthread_mutex_lock(&header_mutex);
-        loop = (free_header_slot + 1) % MAX_REQUEST_SLOTS == oldest_header_slot;
+        available_slot = (free_header_slot + 1) % MAX_REQUEST_SLOTS != oldest_header_slot;
+        if (available_slot) {
+            ack_slot = &ack_slots[free_header_slot];
+            ack_slot->header_slot_WRITE_ONLY = &request_region->header_slots[free_header_slot];
+
+            for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
+                replica_ack_t *replica_ack_instance = replica_ack + (free_header_slot * REPLICA_COUNT) + replica_index;
+                ack_slot->replica_ack_instances[replica_index] = replica_ack_instance;
+                replica_ack_instance->replica_ack_type = REPLICA_NOT_ACKED;
+                replica_ack_instance->version_number = 0;
+            }
+
+            free_header_slot = (free_header_slot + 1) % MAX_REQUEST_SLOTS;
+        }
         pthread_mutex_unlock(&header_mutex);
     }
-
-    pthread_mutex_lock(&header_mutex);
-    ack_slot_t *ack_slot = &ack_slots[free_header_slot];
-    ack_slot->header_slot_WRITE_ONLY = &request_region->header_slots[free_header_slot];
-
-    for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
-        replica_ack_t *replica_ack_instance = replica_ack + (free_header_slot * REPLICA_COUNT) + replica_index;
-        ack_slot->replica_ack_instances[replica_index] = replica_ack_instance;
-        replica_ack_instance->replica_ack_type = REPLICA_NOT_ACKED;
-        replica_ack_instance->version_number = 0;
-    }
-
-    free_header_slot = (free_header_slot + 1) % MAX_REQUEST_SLOTS;
-    pthread_mutex_unlock(&header_mutex);
-
 
     clock_gettime(CLOCK_MONOTONIC, &ack_slot->start_time);
 
@@ -121,52 +136,56 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
     ack_slot->key_len = key_len;
     ack_slot->value_len = value_len;
     ack_slot->version_number = version_number;
-    ack_slot->request_type = request_type;
 
     // Wait for enough space
-    while (1) {
+    bool available_space = false;
+    while (!available_space) {
         pthread_mutex_lock(&data_mutex);
         uint32_t used = (free_data_offset + REQUEST_REGION_DATA_SIZE
                          - oldest_data_offset)
                         % REQUEST_REGION_DATA_SIZE;
-        pthread_mutex_unlock(&data_mutex);
 
 
         uint32_t free_space = REQUEST_REGION_DATA_SIZE - used;
+        available_space = free_space >= (header_data_length);
 
-        if (free_space >= (header_data_length)) {
+        if (available_space) {
             // There's enough space
-            break;
+            ack_slot->starting_data_offset = free_data_offset;
+            ack_slot->data_size = header_data_length;
+            free_data_offset = (free_data_offset + header_data_length) % REQUEST_REGION_DATA_SIZE;
         }
+
+        pthread_mutex_unlock(&data_mutex);
     }
 
-
-    pthread_mutex_lock(&data_mutex);
-    ack_slot->starting_data_offset = free_data_offset;
-    free_data_offset = (free_data_offset + header_data_length) % REQUEST_REGION_DATA_SIZE;
-    pthread_mutex_unlock(&data_mutex);
-
-    while (1) {
+    available_space = false;
+    while (!available_space) {
         pthread_mutex_lock(&ack_mutex);
         uint32_t used = (free_ack_offset + ACK_REGION_DATA_SIZE
                          - oldest_ack_offset)
                         % ACK_REGION_DATA_SIZE;
-        pthread_mutex_unlock(&ack_mutex);
 
         uint32_t free_space = ACK_REGION_DATA_SIZE - used;
+        available_space = free_space >= (ack_data_length);
 
-        if (free_space >= (ack_data_length)) {
+        if (available_space) {
             // There's enough space
-            break;
+            ack_slot->starting_ack_data_offset = free_ack_offset;
+            ack_slot->ack_data_size = ack_data_length;
+            free_ack_offset = (free_ack_offset + ack_data_length) % ACK_REGION_DATA_SIZE;
         }
+
+        pthread_mutex_unlock(&ack_mutex);
     }
 
-    pthread_mutex_lock(&ack_mutex);
-    ack_slot->starting_ack_data_offset = free_ack_offset;
-    free_ack_offset = (free_ack_offset + ack_data_length) % ACK_REGION_DATA_SIZE;
-    pthread_mutex_unlock(&ack_mutex);
-
     return ack_slot;
+}
+
+void get_2_sided_decrement(void) {
+    pthread_mutex_lock(&get_2_sided_mutex);
+    current_get_2_sided_requests--;
+    pthread_mutex_unlock(&get_2_sided_mutex);
 }
 
 void *ack_thread(__attribute__((unused)) void *_args) {
@@ -187,6 +206,7 @@ void *ack_thread(__attribute__((unused)) void *_args) {
                 break;
             case GET_PHASE2:
                 consumed = consume_get_ack_slot_phase2(ack_slot);
+                if (consumed) get_2_sided_decrement();
                 break;
             default:
                 fprintf(stderr, "Got illegal request type\n");
@@ -201,8 +221,12 @@ void *ack_thread(__attribute__((unused)) void *_args) {
         oldest_header_slot = (oldest_header_slot + 1) % MAX_REQUEST_SLOTS;
         pthread_mutex_unlock(&header_mutex);
         pthread_mutex_lock(&data_mutex);
-        oldest_data_offset = (oldest_data_offset + ack_slot->value_len + ack_slot->key_len) % REQUEST_REGION_DATA_SIZE;
+        oldest_data_offset = (oldest_data_offset + ack_slot->data_size) % REQUEST_REGION_DATA_SIZE;
         pthread_mutex_unlock(&data_mutex);
+        pthread_mutex_lock(&ack_mutex);
+        oldest_ack_offset = (oldest_ack_offset + ack_slot->ack_data_size) % ACK_REGION_DATA_SIZE;
+        pthread_mutex_unlock(&ack_mutex);
+
     }
 
     return NULL;

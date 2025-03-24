@@ -4,7 +4,7 @@
 #include "request_region.h"
 #include "ack_region.h"
 
-#define QUEUE_CAPACITY (MAX_REQUEST_SLOTS * INDEX_SLOTS_PR_BUCKET)
+#define MAX_SIMULTANEOUS_GET_REQUESTS 2000
 
 typedef struct {
     uint32_t version_number;

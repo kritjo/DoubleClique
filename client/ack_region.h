@@ -4,9 +4,6 @@
 #include <stdint.h>
 #include "request_region.h"
 
-extern pthread_mutex_t ack_mutex;
-extern uint32_t oldest_ack_offset;
-
 enum put_request_promise_status {
     PUT_PENDING,
     PUT_RESULT_SUCCESS,
@@ -46,7 +43,9 @@ typedef struct {
     uint32_t value_len;
     uint32_t version_number;
     uint32_t starting_data_offset;
+    uint32_t data_size;
     uint32_t starting_ack_data_offset;
+    uint32_t ack_data_size;
     uint32_t key_hash; // Only valid for GET_PHASE1 request types
     char *key; // Only valid for GET requests -- ALLOCATED UNTIL PROMISE IS RESOLVED
     replica_ack_t *replica_ack_instances[REPLICA_COUNT];

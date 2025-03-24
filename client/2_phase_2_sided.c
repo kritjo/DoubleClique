@@ -71,6 +71,17 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
 }
 
 bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
+    // First thing we do is to check for a timeout
+    struct timespec end_p;
+    clock_gettime(CLOCK_MONOTONIC, &end_p);
+
+    if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
+        ack_slot->promise->get_result = GET_RESULT_ERROR_TIMEOUT;
+        free(ack_slot->key);
+        get_2_sided_decrement();
+        return true;
+    }
+
     uint32_t ack_success_count = 0;
     uint32_t ack_count = 0;
 
@@ -83,16 +94,6 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
 
         if (ack_type == REPLICA_ACK_SUCCESS)
             ack_success_count++;
-    }
-
-    // If we do not have error replies and not a quorum, check for timeout
-    struct timespec end_p;
-    clock_gettime(CLOCK_MONOTONIC, &end_p);
-
-    if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
-        ack_slot->promise->get_result = GET_RESULT_ERROR_TIMEOUT;
-        free(ack_slot->key);
-        return true;
     }
 
     if (ack_success_count >= (REPLICA_COUNT + 1) / 2) {
@@ -156,6 +157,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                 // If we have gotten replies from all replicas and can not find a quorum, it is an error
                 ack_slot->promise->get_result = GET_RESULT_ERROR_NO_MATCH;
                 free(ack_slot->key);
+                get_2_sided_decrement();
                 return true;
             } else {
                 // We did not find any candidates, so we do not want to consume yet wait for more acks to arrive
@@ -209,26 +211,23 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
 }
 
 bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
+    // Again: first thing to do is to check for a timeout
+    struct timespec end_p;
+    clock_gettime(CLOCK_MONOTONIC, &end_p);
+
+    if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
+        ack_slot->promise->get_result = GET_RESULT_ERROR_TIMEOUT;
+        free(ack_slot->key);
+        return true;
+    }
+
     // We only use the index 0 of the replica slots no matter the index, as this put was only sent to a single replica
     if (ack_slot->replica_ack_instances[0]->replica_ack_type == REPLICA_NOT_ACKED) {
-        // Check if we have timed out
-        struct timespec end_p;
-        clock_gettime(CLOCK_MONOTONIC, &end_p);
-
-        if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
-            ack_slot->promise->get_result = GET_RESULT_ERROR_TIMEOUT;
-            free(ack_slot->key);
-            pthread_mutex_lock(&ack_mutex);
-            oldest_ack_offset = (oldest_ack_offset + ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)) % ACK_REGION_DATA_SIZE;
-            pthread_mutex_unlock(&ack_mutex);
-            return true;
-        } else {
-            return false;
-        }
+        return false;
     }
 
     if (ack_slot->replica_ack_instances[0]->replica_ack_type != REPLICA_ACK_SUCCESS) {
-        fprintf(stderr, "Unhandled ack state\n");
+        fprintf(stderr, "Unsupported ack state for phase2\n");
         exit(EXIT_FAILURE);
     }
 
@@ -242,9 +241,6 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     if (hash != expected_hash) {
         ack_slot->promise->get_result = GET_RESULT_ERROR_NO_MATCH;
         free(ack_slot->key);
-        pthread_mutex_lock(&ack_mutex);
-        oldest_ack_offset = (oldest_ack_offset + ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)) % ACK_REGION_DATA_SIZE;
-        pthread_mutex_unlock(&ack_mutex);
         return true;
     }
 
@@ -255,9 +251,6 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     }
 
     memcpy(ack_slot->promise->data, ack_data + ack_slot->key_len, ack_slot->value_len);
-    pthread_mutex_lock(&ack_mutex);
-    oldest_ack_offset = (oldest_ack_offset + ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)) % ACK_REGION_DATA_SIZE;
-    pthread_mutex_unlock(&ack_mutex);
     ack_slot->promise->get_result = GET_RESULT_SUCCESS;
     return true;
 }
