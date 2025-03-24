@@ -33,13 +33,10 @@ typedef struct {
      +(INDEX_SLOTS_PR_BUCKET*sizeof(index_entry_t)*(bucket_number))  \
      +(sizeof(index_entry_t)*(slot_number)))
 
-typedef struct {
-    //uint32_t checksum; TODO: maybe should have a checksum here idk if not we at least gotta putt in the version number, so that we know if we have torn reads. A TTL could be future work
-} data_entry_preamble_t;
 
 index_entry_t *existing_slot_for_key(void *index_region, void *data_region, uint32_t key_hash, uint32_t key_length, char *key);
 index_entry_t *find_available_index_slot(void *index_region, uint32_t key_hash);
-data_entry_preamble_t *find_data_slot_for_index_slot(void *data_region, index_entry_t *index_slot, bool try_to_use_existing_data_slot, uint32_t payload_length, void *(*malloc_like)(size_t));
-void insert_in_table(void *data_region, index_entry_t *index_slot, data_entry_preamble_t *data_slot, char *key, uint32_t key_length, uint32_t key_hash, void *data, uint32_t data_length, uint32_t version_number, uint32_t payload_hash);
+void *find_data_slot_for_index_slot(void *data_region, index_entry_t *index_slot, bool try_to_use_existing_data_slot, uint32_t payload_length, void *(*malloc_like)(size_t));
+void insert_in_table(void *data_region, index_entry_t *index_slot, void *data_slot, char *key, uint32_t key_length, uint32_t key_hash, void *data, uint32_t data_length, uint32_t version_number, uint32_t payload_hash);
 
 #endif //DOUBLECLIQUE_INDEX_DATA_PROTOCOL_H
