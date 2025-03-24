@@ -265,7 +265,6 @@ static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_point
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT);
     for (uint32_t i = 0; i < transfer_length; i++) {
         *(((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + return_offset + i) = *(data_pointer + i);
-        //printf("%p: %u\n", (void *) (data_pointer + i), *(data_pointer + i));
     }
 
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;

@@ -92,7 +92,6 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
     if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
         ack_slot->promise->get_result = GET_RESULT_ERROR_TIMEOUT;
         free(ack_slot->key);
-        printf("TIMEOUT phase1!\n");
         return true;
     }
 
@@ -157,7 +156,6 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                 // If we have gotten replies from all replicas and can not find a quorum, it is an error
                 ack_slot->promise->get_result = GET_RESULT_ERROR_NO_MATCH;
                 free(ack_slot->key);
-                printf("err no match\n");
                 return true;
             } else {
                 // We did not find any candidates, so we do not want to consume yet wait for more acks to arrive
@@ -219,7 +217,6 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
 
         if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
             ack_slot->promise->put_result = GET_RESULT_ERROR_TIMEOUT;
-            printf("TIMEOUT phase2!\n");
             free(ack_slot->key);
             pthread_mutex_lock(&ack_mutex);
             oldest_ack_offset = (oldest_ack_offset + ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)) % ACK_REGION_DATA_SIZE;
@@ -232,7 +229,6 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
 
     if (ack_slot->replica_ack_instances[0]->replica_ack_type != REPLICA_ACK_SUCCESS) {
         fprintf(stderr, "Unhandled ack state\n");
-        printf(":(\n");
         exit(EXIT_FAILURE);
     }
 
@@ -246,7 +242,6 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     if (hash != expected_hash) {
         ack_slot->promise->put_result = GET_RESULT_ERROR_NO_MATCH;
         free(ack_slot->key);
-        printf(":( %u %u\n", hash, expected_hash);
         pthread_mutex_lock(&ack_mutex);
         oldest_ack_offset = (oldest_ack_offset + ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)) % ACK_REGION_DATA_SIZE;
         pthread_mutex_unlock(&ack_mutex);

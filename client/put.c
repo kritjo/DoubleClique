@@ -142,7 +142,6 @@ bool consume_put_ack_slot(ack_slot_t *ack_slot) {
 
     if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= PUT_TIMEOUT_NS) {
         ack_slot->promise->put_result = PUT_RESULT_ERROR_TIMEOUT;
-        printf("TIMEOUT!\n");
         return true;
     }
 
