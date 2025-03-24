@@ -38,10 +38,8 @@ typedef struct {
 } stored_index_data_t;
 
 typedef struct {
-    _Atomic(enum get_request_promise_status) status;
-    uint32_t data_length;
-    void *data;
     _Atomic bool contingency_fetch_started;
+    _Atomic (request_promise_t *) promise;
 } pending_get_status_t;
 
 typedef struct {

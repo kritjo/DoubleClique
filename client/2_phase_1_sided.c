@@ -1,7 +1,5 @@
 #include "2_phase_1_sided.h"
 
-#include "main.h"
-
 #include <stdlib.h>
 #include <sisci_api.h>
 #include <pthread.h>
@@ -178,9 +176,6 @@ void init_2_phase_1_sided_get(sci_desc_t sd, uint8_t *replica_node_ids, bool use
 // Invariant: all dma queues is postable
 request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
     pthread_mutex_lock(&get_in_progress);
-    pending_get_status.status = GET_PENDING;
-    pending_get_status.data_length = 0;
-    pending_get_status.data = NULL;
     pending_get_status.contingency_fetch_started = false;
 
     pthread_t thread_ids[REPLICA_COUNT];
@@ -193,16 +188,19 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
     // This is most simple to do using DMA transfers as we can specify callback functions that will be called upon
     // completion. This is not a big drawback it would seem from experiments.
 
-    // TODO: Should not malloc max space
-    pending_get_status.data = malloc(MAX_SIZE_ELEMENT);
-    if (pending_get_status.data == NULL) {
+    pthread_mutex_lock(&completed_index_fetches_mutex);
+    completed_fetches_of_index = 0;
+    pthread_mutex_unlock(&completed_index_fetches_mutex);
+
+    pending_get_status.promise = malloc(sizeof(request_promise_t));
+    if (pending_get_status.promise == NULL) {
         perror("malloc");
         exit(EXIT_FAILURE);
     }
 
-    pthread_mutex_lock(&completed_index_fetches_mutex);
-    completed_fetches_of_index = 0;
-    pthread_mutex_unlock(&completed_index_fetches_mutex);
+    pending_get_status.promise->get_result = GET_PENDING;
+    pending_get_status.promise->data_len = 0;
+    pending_get_status.promise->data = NULL;
 
     for (size_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
         stored_index_data[replica_index].completed = false;
@@ -218,6 +216,10 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
         args->offset = offset;
 
         if (use_dma) {
+            sci_dma_queue_state_t state = SCIDMAQueueState(replica_dma_queues_main[replica_index]);
+            if (state == SCI_DMAQUEUE_POSTED || state == SCI_DMAQUEUE_GATHER) {
+                fprintf(stderr, "Illegal state pre transfer 1\n");
+            }
             SEOE(SCIStartDmaTransfer,
                  replica_dma_queues_main[replica_index],
                  get_receive_segment[replica_index],
@@ -239,12 +241,6 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
         // Only set on first iterations, otherwise we could race COMPLETED/POSTED
     }
 
-    request_promise_t *return_struct = malloc(sizeof(request_promise_t));
-    if (return_struct == NULL) {
-        perror("malloc");
-        exit(EXIT_FAILURE);
-    }
-
     // We could perhaps use waiting on a condition or sched_yield? Not sure how it would affect performance, but would
     // save resources
     struct timespec ts_pre;
@@ -252,11 +248,10 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
 
     clock_gettime(CLOCK_MONOTONIC, &ts_pre);
 
-    while (pending_get_status.status == GET_PENDING) {
+    while (pending_get_status.promise->get_result == GET_PENDING) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
         if (((ts.tv_sec - ts_pre.tv_sec) * 1000000000L + (ts.tv_nsec - ts_pre.tv_nsec)) > GET_TIMEOUT_1_SIDED_NS) {
             // Timeout!
-            printf("TIMEOUT GET_PHASE1!\n");
             for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
                 // Abort all pending DMA operations
                 if (use_dma)
@@ -268,30 +263,11 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
                 }
             }
 
-            return_struct->get_result = GET_RESULT_ERROR_TIMEOUT;
-            return_struct->data_len = 0;
-            return_struct->data = NULL;
+            pending_get_status.promise->get_result = GET_RESULT_ERROR_TIMEOUT;
             pthread_mutex_unlock(&get_in_progress);
 
-            return return_struct;
+            return pending_get_status.promise;
         }
-    }
-
-    switch (pending_get_status.status) {
-        case GET_RESULT_SUCCESS:
-            return_struct->get_result = GET_RESULT_SUCCESS;
-            return_struct->data_len = pending_get_status.data_length;
-            return_struct->data = pending_get_status.data;
-            break;
-        case GET_PENDING:
-            free(return_struct);
-            fprintf(stderr, "Got illegal status from pending_get_status\n");
-            exit(EXIT_FAILURE);
-        default:
-            return_struct->get_result = pending_get_status.status;
-            return_struct->data_len = 0;
-            return_struct->data = NULL;
-            break;
     }
 
     // Need to abort all DMA queues, so that a callback from a previous fetch does not trigger fuckery in a subsequent one
@@ -310,7 +286,7 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
     }
 
     pthread_mutex_unlock(&get_in_progress);
-    return return_struct;
+    return pending_get_status.promise;
 }
 
 static void *pio_read_thread(void *arg) {
@@ -351,9 +327,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
                    sizeof(*slot));
         }
     } else {
-        pending_get_status.data_length = 0;
-        pending_get_status.data = NULL;
-        pending_get_status.status = GET_RESULT_ERROR_TRANSFER;
+        pending_get_status.promise->get_result = GET_RESULT_ERROR_TRANSFER;
         return SCI_CALLBACK_CONTINUE;
     }
 
@@ -383,7 +357,6 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
             // If we either did not find any slots in the preferred replica or if the fetch failed, defer all to the
             // contingency fetch. This will also mean that we try another backend, as this replica does not have any
             // candidates
-            printf("no slots w hash\n");
             contingency_backend_fetch(NULL, 0, args->key, args->key_hash, args->key_len);
             return SCI_CALLBACK_CONTINUE;
         }
@@ -396,7 +369,12 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
         if (use_dma) {
             // Fetch the data segments for all those slots
             // No need of timing this out either, it will be handled by the general TIMEOUT_MSG. Retries would not likely help anyways
-            SEOE(SCIStartDmaTransferVec,
+            sci_error_t sci_error;
+            sci_dma_queue_state_t state = SCIDMAQueueState(replica_dma_queues_main[replica_index]);
+            if (state == SCI_DMAQUEUE_POSTED || state == SCI_DMAQUEUE_GATHER) {
+                fprintf(stderr, "Illegal state pre transfer 2\n");
+            }
+            SCIStartDmaTransferVec(
                  replica_dma_queues_main[replica_index],
                  get_receive_segment[replica_index],
                  data_segments[replica_index],
@@ -404,7 +382,11 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
                  dma_vec,
                  preferred_data_fetch_completed_callback,
                  &preferred_data_fetch_args,
-                 SCI_FLAG_USE_CALLBACK | SCI_FLAG_DMA_READ | SCI_FLAG_DMA_GLOBAL);
+                 SCI_FLAG_USE_CALLBACK | SCI_FLAG_DMA_READ | SCI_FLAG_DMA_GLOBAL,
+                 &sci_error);
+            if (sci_error != SCI_ERR_OK) {
+                fprintf(stderr, "%s at SCIStartDmaTransferVec\n", SCIGetErrorString(sci_error));
+            }
         } else {
             for (uint8_t slot_index = 0; slot_index < stored_index_data[replica_index].slots_length; slot++, slot_index++) {
                 SEOE(SCIMemCpy,
@@ -433,7 +415,7 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
     uint32_t tried_vnrs[INDEX_SLOTS_PR_BUCKET];
 
     if (status != SCI_ERR_OK) {
-        printf("failed preferred: %s\n", SCIGetErrorString(status));
+        printf("failed preferred: %s. Key len: %d, value len: %d\n", SCIGetErrorString(status), args->key_len, args->data_len);
         contingency_backend_fetch(NULL, 0, args->key, args->key_hash, args->key_len);
         return SCI_CALLBACK_CONTINUE;
     }
@@ -459,7 +441,6 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
     }
 
     if (version_number == -1) {
-        printf("novnr\n");
         contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key, args->key_hash, args->key_len);
         return SCI_CALLBACK_CONTINUE;
     }
@@ -495,12 +476,12 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
 
     if (correct_vnr_count >= (REPLICA_COUNT + 1) / 2) {
         // now we must verify the e2e hash
-        pending_get_status.data_length = stored_index_data[args->replica_index].slots[correct_slot].data_length;
+        uint32_t data_length = stored_index_data[args->replica_index].slots[correct_slot].data_length;
 
-        uint32_t expected_payload_hash = *((uint32_t *) (data_slot + args->key_len + pending_get_status.data_length));
-        *((uint32_t *) (data_slot + args->key_len + pending_get_status.data_length)) = (uint32_t) version_number;
+        uint32_t expected_payload_hash = *((uint32_t *) (data_slot + args->key_len + data_length));
+        *((uint32_t *) (data_slot + args->key_len + data_length)) = (uint32_t) version_number;
 
-        uint32_t payload_hash = super_fast_hash(data_slot, (int) (args->key_len + pending_get_status.data_length +
+        uint32_t payload_hash = super_fast_hash(data_slot, (int) (args->key_len + data_length +
                                                                   sizeof(((header_slot_t *) 0)->version_number)));
 
         if (payload_hash != expected_payload_hash) {
@@ -508,8 +489,13 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
             return SCI_CALLBACK_CONTINUE;
         }
 
-        memcpy(pending_get_status.data, data_slot + args->key_len, pending_get_status.data_length);
-        pending_get_status.status = GET_RESULT_SUCCESS;
+        pending_get_status.promise->data = malloc(data_length);
+        if (pending_get_status.promise->data == NULL) {
+            perror("malloc");
+            exit(EXIT_FAILURE);
+        }
+        memcpy(pending_get_status.promise->data, data_slot + args->key_len, data_length);
+        pending_get_status.promise->get_result = GET_RESULT_SUCCESS;
 
     } else {
         contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key, args->key_hash, args->key_len);
@@ -613,9 +599,7 @@ contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_t
 
     if (found_contingency_candidates_count == 0) {
         // Did not find a quorum, fail the fetch
-        pending_get_status.data_length = 0;
-        pending_get_status.data = NULL;
-        pending_get_status.status = GET_RESULT_ERROR_NO_MATCH;
+        pending_get_status.promise->get_result = GET_RESULT_ERROR_NO_MATCH;
         return;
     }
 
@@ -696,7 +680,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
     pthread_mutex_unlock(&completed_contingency_fetches_mutex);
 
     if (status != SCI_ERR_OK) {
-        fprintf(stderr, "not ok contingency fetch: %s\n", SCIGetErrorString(status));
+        fprintf(stderr, "failed contingency fetch: %s\n", SCIGetErrorString(status));
         pthread_mutex_lock(&completed_contingency_fetches_mutex);
 
         uint32_t completed_contingency_fetches_count = 0;
@@ -708,9 +692,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         pthread_mutex_unlock(&completed_contingency_fetches_mutex);
 
         if (completed_contingency_fetches_count == args->found_contingency_candidates_count) {
-            pending_get_status.data_length = 0;
-            pending_get_status.data = 0;
-            pending_get_status.status = GET_RESULT_ERROR_TRANSFER;
+            pending_get_status.promise->get_result = GET_RESULT_ERROR_TRANSFER;
         }
 
         return SCI_CALLBACK_CONTINUE;
@@ -720,23 +702,26 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
 
     if (strncmp(slot, args->key, args->index_entry.key_length) == 0) {
         // Match
-        pending_get_status.data_length = args->index_entry.data_length;
+        uint32_t data_length = args->index_entry.data_length;
 
-        uint32_t expected_payload_hash = *((uint32_t *) (slot + args->index_entry.key_length + pending_get_status.data_length));
-        *((uint32_t *) (slot + args->index_entry.key_length + pending_get_status.data_length)) = (uint32_t) args->index_entry.version_number;
+        uint32_t expected_payload_hash = *((uint32_t *) (slot + args->index_entry.key_length + data_length));
+        *((uint32_t *) (slot + args->index_entry.key_length + data_length)) = (uint32_t) args->index_entry.version_number;
 
-        uint32_t payload_hash = super_fast_hash(slot, (int) (args->index_entry.key_length + pending_get_status.data_length +
+        uint32_t payload_hash = super_fast_hash(slot, (int) (args->index_entry.key_length + data_length +
                                                                   sizeof(((header_slot_t *) 0)->version_number)));
 
         if (payload_hash != expected_payload_hash) {
-            pending_get_status.data_length = 0;
-            pending_get_status.data = 0;
-            pending_get_status.status = GET_RESULT_ERROR_NO_MATCH;
+            pending_get_status.promise->get_result = GET_RESULT_ERROR_NO_MATCH;
             return SCI_CALLBACK_CONTINUE;
         }
 
-        memcpy(pending_get_status.data, slot + args->index_entry.key_length, pending_get_status.data_length);
-        pending_get_status.status = GET_RESULT_SUCCESS;
+        pending_get_status.promise->data = malloc(data_length);
+        if (pending_get_status.promise->data == NULL) {
+            perror("malloc");
+            exit(EXIT_FAILURE);
+        }
+        memcpy(pending_get_status.promise->data, slot + args->index_entry.key_length, data_length);
+        pending_get_status.promise->get_result = GET_RESULT_SUCCESS;
     } else {
         // No match, if we have received all set error, if not just fall through and let another thread handle it
         pthread_mutex_lock(&completed_contingency_fetches_mutex);
@@ -749,9 +734,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         pthread_mutex_unlock(&completed_contingency_fetches_mutex);
 
         if (completed_contingency_fetches_count == args->found_contingency_candidates_count) {
-            pending_get_status.data_length = 0;
-            pending_get_status.data = 0;
-            pending_get_status.status = GET_RESULT_ERROR_NO_MATCH;
+            pending_get_status.promise->get_result = GET_RESULT_ERROR_NO_MATCH;
         }
     }
 

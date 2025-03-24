@@ -94,7 +94,7 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
         update = true;
     }
 
-    data_entry_preamble_t *data_slot = find_data_slot_for_index_slot(args->data_region,
+    void *data_slot = find_data_slot_for_index_slot(args->data_region,
                                                                      index_slot,
                                                                      update,
                                                                      slot.key_length + slot.value_length + sizeof(((header_slot_t *) 0)->version_number),
