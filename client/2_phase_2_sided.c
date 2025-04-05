@@ -47,25 +47,14 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
 
     ack_slot->key_hash = key_hash;
 
-    header_slot_t temp_slot;
-    temp_slot.payload_hash = key_hash;
-    temp_slot.offset = (size_t) starting_offset;
-    temp_slot.key_length = key_len;
-    temp_slot.value_length = 0;
-    temp_slot.replica_write_back_hint = 0;
-    temp_slot.return_offset = 0;
-    temp_slot.version_number = ack_slot->version_number;
-    temp_slot.status = HEADER_SLOT_USED_GET_PHASE1;
-
-    ptrdiff_t remote_offset = ((volatile char *) ack_slot->header_slot_WRITE_ONLY) - ((volatile char *) request_region);
-
-    SEOE(SCIMemCpy,
-         request_sequence,
-         &temp_slot,
-         request_map,
-         remote_offset,
-         sizeof(header_slot_t),
-         NO_FLAGS);
+    ack_slot->header_slot_WRITE_ONLY->payload_hash = key_hash;
+    ack_slot->header_slot_WRITE_ONLY->offset = (size_t) starting_offset;
+    ack_slot->header_slot_WRITE_ONLY->key_length = key_len;
+    ack_slot->header_slot_WRITE_ONLY->value_length = 0;
+    ack_slot->header_slot_WRITE_ONLY->replica_write_back_hint = 0;
+    ack_slot->header_slot_WRITE_ONLY->return_offset = 0;
+    ack_slot->header_slot_WRITE_ONLY->version_number = ack_slot->version_number;
+    ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_GET_PHASE1;
 
     return ack_slot->promise;
 }
@@ -258,24 +247,13 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
 void send_phase_2_get(uint32_t version_number, uint32_t replica_index, uint8_t key_len, uint32_t value_len, ptrdiff_t server_data_offset, request_promise_t *promise) {
     ack_slot_t *ack_slot = get_ack_slot_blocking(GET_PHASE2, key_len, value_len, 0, key_len + value_len + sizeof(uint32_t), version_number, promise);
 
-    header_slot_t temp_slot;
-    temp_slot.offset = (size_t) server_data_offset;
-    temp_slot.return_offset = ack_slot->starting_ack_data_offset;
-    temp_slot.key_length = key_len;
-    temp_slot.value_length = value_len;
-    temp_slot.version_number = version_number;
-    temp_slot.replica_write_back_hint = replica_index;
-    temp_slot.status = HEADER_SLOT_USED_GET_PHASE2;
-
-    ptrdiff_t remote_offset = ((volatile char *) ack_slot->header_slot_WRITE_ONLY) - ((volatile char *) request_region);
-
-    SEOE(SCIMemCpy,
-         request_sequence,
-         &temp_slot,
-         request_map,
-         remote_offset,
-         sizeof(header_slot_t),
-         NO_FLAGS);
+    ack_slot->header_slot_WRITE_ONLY->offset = (size_t) server_data_offset;
+    ack_slot->header_slot_WRITE_ONLY->return_offset = ack_slot->starting_ack_data_offset;
+    ack_slot->header_slot_WRITE_ONLY->key_length = key_len;
+    ack_slot->header_slot_WRITE_ONLY->value_length = value_len;
+    ack_slot->header_slot_WRITE_ONLY->version_number = version_number;
+    ack_slot->header_slot_WRITE_ONLY->replica_write_back_hint = replica_index;
+    ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_GET_PHASE2;
 }
 
 static void *phase2_thread(__attribute__((unused)) void *_args) {
