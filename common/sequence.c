@@ -52,5 +52,4 @@ enum sequence_completed_state check_for_errors(sci_sequence_t sequence) {
             fprintf(stderr, "Illegal state for sequence\n");
             exit(EXIT_FAILURE);
     }
-
 }

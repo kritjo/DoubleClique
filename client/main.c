@@ -64,9 +64,14 @@ int main(int argc, char *argv[]) {
     request_promise_t *promise;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
-    for (uint32_t i = 0; i < 200000; i++) {
-        put(key, 4, sample_data, sizeof(sample_data));
-        put(key2, 5, &i, sizeof(i));
+#ifndef PUT_LOOP
+#define PUT_LOOP_COUNT 200000
+    request_promise_t *promises_key[PUT_LOOP_COUNT];
+    request_promise_t *promises_key2[PUT_LOOP_COUNT];
+
+    for (uint32_t i = 0; i < PUT_LOOP_COUNT; i++) {
+        promises_key[i] = put(key, 4, sample_data, sizeof(sample_data));
+        promises_key2[i] = put(key2, 5, &i, sizeof(i));
     }
 
     promise = put(key, 4, sample_data, sizeof(sample_data));
@@ -74,61 +79,124 @@ int main(int argc, char *argv[]) {
     while (promise->put_result == PUT_PENDING);
 
     clock_gettime(CLOCK_MONOTONIC, &end);
-    printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / 400001);
+    printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / ((PUT_LOOP_COUNT * 2) + 1));
     printf("Put result: %u\n", promise->put_result);
-
-
-    request_promise_t *promise2 = get_2_phase_1_sided(key, 4);
-
-    if (promise2->get_result == GET_RESULT_SUCCESS) printf("At place 7 of get with data_2 length %u: %u\n", promise2->data_len, ((unsigned char *) promise2->data)[7]);
-    else printf("get error: %u\n", promise2->get_result);
-
-
-    request_promise_t *promise1 = get_2_phase_1_sided(key2, 5);
-    if (promise1->get_result == GET_RESULT_SUCCESS) printf("At place 0 of get with data length %u: %u\n", promise1->data_len , *(uint32_t *) promise1->data);
-
-    free(promise1->data);
-    free(promise2->data);
-    free(promise1);
-    free(promise2);
-
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < 20; i++) {
-        promise1 = get_2_phase_1_sided(key2, 5);
-        promise2 = get_2_phase_1_sided(key, 4);
-
-        free(promise1->data);
-        free(promise2->data);
-        free(promise1);
-        free(promise2);
-    }
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / 20);
-
-
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < 200; i++) {
-        promise = get_2_phase_2_sided(key2, 5); // Note that data should really be freed but is not
-        promise = get_2_phase_2_sided(key, 4);
-    }
-    while (promise->get_result == GET_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    printf("Get b3p on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / 400);
-
-    promise = get_2_phase_2_sided(key, 4);
-    printf("main promise %p\n", (void *) promise);
-    while (promise->get_result == GET_PENDING);
-    if (promise->get_result == GET_RESULT_SUCCESS) {
-        printf("success data ptr: %p\n", promise->data);
-        printf("completed! at place 7: %u\n", ((unsigned char *) promise->data)[7]);
-    }
-    else printf("get error: %u at %p\n", promise->get_result, (void *) &promise->get_result);
-    free(promise->data);
     free(promise);
 
-    while (1);
+    for (uint32_t i = 0; i < PUT_LOOP_COUNT; i++) {
+        while (promises_key[i]->put_result == PUT_PENDING);
+        if (promises_key[i]->put_result != PUT_RESULT_SUCCESS) {
+            printf("Put result: %u\n", promises_key[i]->put_result);
+        }
+        free(promises_key[i]);
+        while (promises_key2[i]->put_result == PUT_PENDING);
+        if (promises_key2[i]->put_result != PUT_RESULT_SUCCESS) {
+            printf("Put result: %u\n", promises_key2[i]->put_result);
+        }
+        free(promises_key2[i]);
+    }
+#else
+    promise = put(key, 4, sample_data, sizeof(sample_data));
+    while (promise->put_result == PUT_PENDING);
+    if (promise->put_result != PUT_RESULT_SUCCESS) {
+        fprintf(stderr, "Put error1: %d!\n", promise->put_result);
+        exit(EXIT_FAILURE);
+    }
 
-    // TODO: How to free the slots in buddy and in general
+    int val = 7;
+    promise = put(key2, 5, &val, sizeof(val));
+    while (promise->put_result == PUT_PENDING);
+    if (promise->put_result != PUT_RESULT_SUCCESS) {
+        fprintf(stderr, "Put error2: %d!\n", promise->put_result);
+        exit(EXIT_FAILURE);
+    }
+#endif
+
+    promise = get_2_phase_1_sided(key, 4);
+
+    if (promise->get_result == GET_RESULT_SUCCESS) {
+        printf("At place 7 of get with data_2 length %u: %u\n", promise->data_len,
+               ((unsigned char *) promise->data)[7]);
+        free(promise->data);
+    }
+    else printf("get error: %u\n", promise->get_result);
+    free(promise);
+
+    promise = get_2_phase_1_sided(key2, 5);
+    if (promise->get_result == GET_RESULT_SUCCESS) {
+        printf("At place 0 of get with data length %u: %u\n", promise->data_len, *(uint32_t *) promise->data);
+        free(promise->data);
+    }
+
+    free(promise);
+
+#ifndef GET_LOOP_1
+#define GET_LOOP_COUNT_1_SIDED 20000
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (uint32_t i = 0; i < GET_LOOP_COUNT_1_SIDED; i++) {
+        promise = get_2_phase_1_sided(key2, 5);
+        if (promise->get_result != GET_RESULT_SUCCESS) {
+            printf("Get result: %u\n", promise->get_result);
+        } else {
+            free(promise->data);
+        }
+        free(promise);
+
+        promise = get_2_phase_1_sided(key, 4);
+        if (promise->get_result != GET_RESULT_SUCCESS) {
+            printf("Get result: %u\n", promise->get_result);
+        } else {
+            free(promise->data);
+        }
+        free(promise);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    printf("Took on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / (GET_LOOP_COUNT_1_SIDED * 2));
+#endif
+
+#define GET_LOOP_COUNT_2_SIDED 2000000
+    request_promise_t *promises_get_key[GET_LOOP_COUNT_2_SIDED];
+    request_promise_t *promises_get_key2[GET_LOOP_COUNT_2_SIDED];
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    for (uint32_t i = 0; i < GET_LOOP_COUNT_2_SIDED; i++) {
+        promises_get_key[i] = get_2_phase_2_sided(key2, 5);
+        promises_get_key2[i] = get_2_phase_2_sided(key, 4);
+        if (i%100000 == 0) {
+            printf("Another day another GET\n");
+        }
+    }
+
+    promise = get_2_phase_2_sided(key, 4);
+    while (promise->get_result == GET_PENDING);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    printf("Get b3p on avg: %ld\n", ((end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec)) / ((GET_LOOP_COUNT_2_SIDED * 2) + 1));
+    if (promise->get_result == GET_RESULT_SUCCESS) {
+        printf("completed! at place 7: %u\n", ((unsigned char *) promise->data)[7]);
+        free(promise->data);
+    }
+    free(promise);
+
+    uint32_t errors = 0;
+    for (uint32_t i = 0; i < GET_LOOP_COUNT_2_SIDED; i++) {
+        while (promises_get_key[i]->get_result == GET_PENDING);
+        if (promises_get_key[i]->get_result != GET_RESULT_SUCCESS) {
+            printf("error at %d: %d\n", i*2, promises_get_key[i]->get_result);
+            errors++;
+        }
+        free(promises_get_key[i]);
+        while (promises_get_key2[i]->get_result == GET_PENDING);
+        if (promises_get_key2[i]->get_result != GET_RESULT_SUCCESS) {
+            printf("error at %d: %d\n", i*2 + 1, promises_get_key2[i]->get_result);
+            errors++;
+        }
+        free(promises_get_key2[i]);
+    }
+
+    printf("Completed! errors: %d\n", errors); //TODO: This is way too high
+
+    while (1);
 
     SEOE(SCIClose, sd, NO_FLAGS);
     SCITerminate();
