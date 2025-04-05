@@ -72,6 +72,7 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
     ack_slot->header_slot_WRITE_ONLY->key_length = key_len;
     ack_slot->header_slot_WRITE_ONLY->value_length = value_len;
     ack_slot->header_slot_WRITE_ONLY->version_number = ack_slot->version_number;
+    SCIStoreBarrier(request_sequence, NO_FLAGS);
     ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_PUT;
 
     return ack_slot->promise;
