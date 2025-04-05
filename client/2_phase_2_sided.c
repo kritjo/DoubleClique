@@ -8,6 +8,7 @@
 #include "super_fast_hash.h"
 #include "2_phase_1_sided.h"
 #include "phase_2_queue.h"
+#include "sequence.h"
 
 static void *phase2_thread(__attribute__((unused)) void *_args);
 
@@ -54,7 +55,7 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
     ack_slot->header_slot_WRITE_ONLY->replica_write_back_hint = 0;
     ack_slot->header_slot_WRITE_ONLY->return_offset = 0;
     ack_slot->header_slot_WRITE_ONLY->version_number = ack_slot->version_number;
-    SCIStoreBarrier(request_sequence, NO_FLAGS);
+    check_for_errors(request_sequence);
     ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_GET_PHASE1;
 
     return ack_slot->promise;
@@ -254,7 +255,7 @@ void send_phase_2_get(uint32_t version_number, uint32_t replica_index, uint8_t k
     ack_slot->header_slot_WRITE_ONLY->value_length = value_len;
     ack_slot->header_slot_WRITE_ONLY->version_number = version_number;
     ack_slot->header_slot_WRITE_ONLY->replica_write_back_hint = replica_index;
-    SCIStoreBarrier(request_sequence, NO_FLAGS);
+    check_for_errors(request_sequence);
     ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_GET_PHASE2;
 }
 

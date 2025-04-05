@@ -16,6 +16,7 @@
 
 #include "buddy_alloc.h"
 #include "request_region_utils.h"
+#include "sequence.h"
 
 static request_region_t *request_region;
 static struct buddy *buddy = NULL;
@@ -175,6 +176,19 @@ int request_region_poller(void *arg) {
                  &ack_sequence,
                  NO_FLAGS);
 
+            sci_error_t error;
+            sci_sequence_status_t status;
+
+            status = SCIStartSequence(ack_sequence, NO_FLAGS, &error);
+            if (error != SCI_ERR_OK) {
+                fprintf(stderr, "SCIStartSequence returned non SCI_ERR_OK, which should not be possible: %s\n", SCIGetErrorString(error));
+                exit(EXIT_FAILURE);
+            }
+            if (status != SCI_SEQ_OK) {
+                fprintf(stderr, "SCIStartSequence returned non SCI_SEQ_OK: %d\n", status);
+                exit(EXIT_FAILURE);
+            }
+
             connected_to_client = true;
         }
 
@@ -258,7 +272,7 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
         replica_ack_instance->bucket[i] = *((index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, i));
     }
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
-    SCIStoreBarrier(ack_sequence, NO_FLAGS);
+    check_for_errors(ack_sequence);
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
 }
 
@@ -269,6 +283,6 @@ static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_point
     }
 
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
-    SCIStoreBarrier(ack_sequence, NO_FLAGS);
+    check_for_errors(ack_sequence);
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
 }

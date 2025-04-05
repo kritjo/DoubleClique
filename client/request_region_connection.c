@@ -59,5 +59,18 @@ void connect_to_request_region(sci_desc_t sd) {
          &request_sequence,
          NO_FLAGS);
 
+    sci_error_t error;
+    sci_sequence_status_t status;
+
+    status = SCIStartSequence(request_sequence, NO_FLAGS, &error);
+    if (error != SCI_ERR_OK) {
+        fprintf(stderr, "SCIStartSequence returned non SCI_ERR_OK, which should not be possible: %s\n", SCIGetErrorString(error));
+        exit(EXIT_FAILURE);
+    }
+    if (status != SCI_SEQ_OK) {
+        fprintf(stderr, "SCIStartSequence returned non SCI_SEQ_OK: %d\n", status);
+        exit(EXIT_FAILURE);
+    }
+
     request_region->status = PUT_REQUEST_REGION_ACTIVE;
 }

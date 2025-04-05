@@ -10,6 +10,7 @@
 #include "index_data_protocol.h"
 #include "request_region_connection.h"
 #include "ack_region.h"
+#include "sequence.h"
 
 // wraparound version_number, large enough to avoid replay attacks
 static volatile _Atomic uint32_t version_number = 0;
@@ -72,7 +73,7 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
     ack_slot->header_slot_WRITE_ONLY->key_length = key_len;
     ack_slot->header_slot_WRITE_ONLY->value_length = value_len;
     ack_slot->header_slot_WRITE_ONLY->version_number = ack_slot->version_number;
-    SCIStoreBarrier(request_sequence, NO_FLAGS);
+    check_for_errors(request_sequence);
     ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_PUT;
 
     return ack_slot->promise;
