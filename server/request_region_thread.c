@@ -96,10 +96,19 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
     }
 
     void *data_slot = find_data_slot_for_index_slot(args->data_region,
-                                                                     index_slot,
-                                                                     update,
-                                                                     slot.key_length + slot.value_length + sizeof(((header_slot_t *) 0)->version_number),
-                                                                     buddy_wrapper);
+                                                    index_slot,
+                                                    update,
+                                                    slot.key_length + slot.value_length + sizeof(((header_slot_t *) 0)->version_number),
+                                                    buddy_wrapper);
+
+    if (data_slot == NULL) {
+        send_put_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence,
+                     slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
+        printf("No data left\n");
+        request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+        free(data);
+        return;
+    }
 
     insert_in_table(args->data_region,
                     index_slot,
