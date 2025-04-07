@@ -17,6 +17,7 @@
 static sci_desc_t sd;
 
 static request_promise_t *put(const char *key, uint8_t key_len, void *value, uint32_t value_len);
+static char* gen_uuid(void);
 
 int main(int argc, char *argv[]) {
     if (argc < REPLICA_COUNT + 1) {
@@ -50,18 +51,43 @@ int main(int argc, char *argv[]) {
     init_2_phase_1_sided_get(sd, replica_node_ids, false);
     init_2_phase_2_sided_get();
 
+    request_promise_t *promise;
+    struct timespec start, end;
+
     unsigned char sample_data[8];
 
     for (unsigned char i = 0; i < 8; i++) {
         sample_data[i] = i;
     }
 
+    printf("Loading table that has %lu index buckets\n", INDEX_BUCKETS);
+
+#define PRELOAD_LOOP_COUNT 30000
+    char *keys[PRELOAD_LOOP_COUNT];
+    uint32_t index = 0;
+
+    while(1) {
+        keys[index] = gen_uuid();
+
+        promise = put(keys[index], (uint8_t) 36, sample_data, 8);
+
+        while (promise->put_result == PUT_PENDING);
+        if (promise->put_result == PUT_RESULT_SUCCESS) {
+            index++;
+        } else {
+            fprintf(stderr, "Put error: %d\n", promise->put_result);
+        }
+
+        free(promise);
+
+        if (index >= 30000) break;
+    }
+
+    printf("Loaded table with %d keys\n", PRELOAD_LOOP_COUNT);
+
     char key[] = "tall";
     char key2[] = "tall2";
 
-    struct timespec start, end;
-
-    request_promise_t *promise;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
 #ifndef PUT_LOOP
@@ -208,4 +234,25 @@ int main(int argc, char *argv[]) {
 static request_promise_t *put(const char *key, uint8_t key_len, void *value, uint32_t value_len) {
     request_promise_t *promise = put_blocking_until_available_put_request_region_slot(key, key_len, value, value_len);
     return promise;
+}
+
+static char* gen_uuid(void) {
+    char v[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+    char *buf = malloc(37);
+
+    //gen random for all spaces because lazy
+    for(int i = 0; i < 36; ++i) {
+        buf[i] = v[rand()%16];
+    }
+
+    //put dashes in place
+    buf[8] = '-';
+    buf[13] = '-';
+    buf[18] = '-';
+    buf[23] = '-';
+
+    //needs end byte
+    buf[36] = '\0';
+
+    return buf;
 }
