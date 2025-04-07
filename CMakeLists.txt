@@ -35,6 +35,8 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
 
 find_package(SISCI REQUIRED)
 
+add_subdirectory(xxHash)
+
 add_subdirectory(common)
 add_subdirectory(client)
 add_subdirectory(server)

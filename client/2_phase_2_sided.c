@@ -5,10 +5,11 @@
 #include "2_phase_2_sided.h"
 #include "ack_region.h"
 #include "request_region_connection.h"
-#include "super_fast_hash.h"
 #include "2_phase_1_sided.h"
 #include "phase_2_queue.h"
 #include "sequence.h"
+#include "xxhash.h"
+#include "xxh_seed.h"
 
 static void *phase2_thread(__attribute__((unused)) void *_args);
 
@@ -43,7 +44,7 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
         current_offset = (current_offset + 1) % REQUEST_REGION_DATA_SIZE;
     }
 
-    uint32_t key_hash = super_fast_hash(hash_data, (int) (key_len));
+    uint32_t key_hash = XXH32(hash_data, key_len, XXH_SEED);
     ack_slot->key = hash_data;
 
     ack_slot->key_hash = key_hash;
@@ -228,7 +229,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     uint32_t expected_hash = *((uint32_t *) (ack_data + ack_slot->key_len + ack_slot->value_len));
     *((uint32_t *) (ack_data + ack_slot->key_len + ack_slot->value_len)) = ack_slot->version_number;
 
-    uint32_t hash = super_fast_hash(ack_data, (int) (ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)));
+    uint32_t hash = XXH32(ack_data, ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t), XXH_SEED);
     if (hash != expected_hash) {
         ack_slot->promise->get_result = GET_RESULT_ERROR_NO_MATCH;
         free(ack_slot->key);

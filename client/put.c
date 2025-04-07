@@ -6,18 +6,19 @@
 #include "sisci_glob_defs.h"
 #include "request_region.h"
 #include "get_node_id.h"
-#include "super_fast_hash.h"
 #include "index_data_protocol.h"
 #include "request_region_connection.h"
 #include "ack_region.h"
 #include "sequence.h"
+#include "xxh_seed.h"
+#include "xxhash.h"
 
 // wraparound version_number, large enough to avoid replay attacks
 static volatile _Atomic uint32_t version_number = 0;
 
 static uint8_t client_id;
 
-void init_put(sci_desc_t sd) {
+void init_put(void) {
     unsigned int node_id = get_node_id();
     if (node_id > UINT8_MAX) {
         fprintf(stderr, "node_id too large!\n");
@@ -64,8 +65,7 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
     // Copy version number into the first 4 bytes of hash_data
     memcpy(hash_data + key_len + value_len, &ack_slot->version_number, sizeof(((header_slot_t *) 0)->version_number));
 
-    uint32_t payload_hash = super_fast_hash(hash_data,
-                                            (int) (key_len + value_len + sizeof(((header_slot_t *) 0)->version_number)));
+    uint32_t payload_hash = XXH32(hash_data, key_len + value_len + sizeof(((header_slot_t *) 0)->version_number), XXH_SEED);
     free(hash_data);
 
     ack_slot->header_slot_WRITE_ONLY->payload_hash = payload_hash;

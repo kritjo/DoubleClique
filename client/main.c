@@ -7,7 +7,6 @@
 
 #include "sisci_glob_defs.h"
 
-#include "super_fast_hash.h"
 #include "2_phase_1_sided.h"
 #include "put.h"
 #include "request_region_connection.h"
@@ -27,7 +26,7 @@ int main(int argc, char *argv[]) {
     SEOE(SCIOpen, &sd, NO_FLAGS);
 
     // TODO: reset state if client reconnects
-    init_put(sd);
+    init_put();
 
     pthread_t ack_thread_id;
     pthread_create(&ack_thread_id, NULL, ack_thread, NULL);
@@ -80,7 +79,7 @@ int main(int argc, char *argv[]) {
 
         free(promise);
 
-        if (index >= 30000) break;
+        if (index >= PRELOAD_LOOP_COUNT) break;
     }
 
     printf("Loaded table with %d keys\n", PRELOAD_LOOP_COUNT);

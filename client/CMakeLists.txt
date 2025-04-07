@@ -16,3 +16,4 @@ add_executable(client
 
 target_link_libraries(client PRIVATE commonLib)
 target_link_libraries(client PRIVATE SISCI)
+target_link_libraries(client PRIVATE xxhash)
