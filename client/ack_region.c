@@ -29,6 +29,8 @@ ack_slot_t ack_slots[MAX_REQUEST_SLOTS];
 sci_local_segment_t ack_segment;
 sci_map_t ack_map;
 
+static void block_for_available_space(uint32_t required_space, pthread_mutex_t *mutex, uint32_t *free_offset, uint32_t oldest_offset, uint32_t *out_starting_offset);
+
 void init_ack_region(sci_desc_t sd) {
     sci_error_t sci_error;
     SEOE(SCICreateSegment,
@@ -101,82 +103,47 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
                 replica_ack_instance->version_number = 0;
             }
 
+            clock_gettime(CLOCK_MONOTONIC, &ack_slot->start_time);
+
+            if (promise == NULL) {
+                promise = malloc(sizeof(request_promise_t));
+                if (promise == NULL) {
+                    perror("malloc");
+                    exit(EXIT_FAILURE);
+                }
+            }
+
+            ack_slot->request_type = request_type;
+
+            switch (ack_slot->request_type) {
+                case PUT:
+                    promise->put_result = PUT_PENDING;
+                    break;
+                case GET_PHASE1:
+                    promise->get_result = GET_PENDING;
+                    break;
+                case GET_PHASE2:
+                    break;
+                default:
+                    fprintf(stderr, "Got illegal request type\n");
+                    exit(EXIT_FAILURE);
+            }
+
+            ack_slot->promise = promise;
+            ack_slot->key_len = key_len;
+            ack_slot->value_len = value_len;
+            ack_slot->version_number = version_number;
+
+            // Wait for enough space
+            block_for_available_space(header_data_length, &data_mutex, &free_data_offset, oldest_data_offset, &ack_slot->starting_data_offset);
+            ack_slot->data_size = header_data_length;
+
+            block_for_available_space(ack_data_length, &ack_mutex, &free_ack_offset, oldest_ack_offset, &ack_slot->starting_ack_data_offset);
+            ack_slot->ack_data_size = ack_data_length;
+
             free_header_slot = (free_header_slot + 1) % MAX_REQUEST_SLOTS;
         }
         pthread_mutex_unlock(&header_mutex);
-    }
-
-    clock_gettime(CLOCK_MONOTONIC, &ack_slot->start_time);
-
-    if (promise == NULL) {
-        promise = malloc(sizeof(request_promise_t));
-        if (promise == NULL) {
-            perror("malloc");
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    ack_slot->request_type = request_type;
-
-    switch (ack_slot->request_type) {
-        case PUT:
-            promise->put_result = PUT_PENDING;
-            break;
-        case GET_PHASE1:
-            promise->get_result = GET_PENDING;
-            break;
-        case GET_PHASE2:
-            break;
-        default:
-            fprintf(stderr, "Got illegal request type\n");
-            exit(EXIT_FAILURE);
-    }
-
-    ack_slot->promise = promise;
-    ack_slot->key_len = key_len;
-    ack_slot->value_len = value_len;
-    ack_slot->version_number = version_number;
-
-    // Wait for enough space
-    bool available_space = false;
-    while (!available_space) {
-        pthread_mutex_lock(&data_mutex);
-        uint32_t used = (free_data_offset + REQUEST_REGION_DATA_SIZE
-                         - oldest_data_offset)
-                        % REQUEST_REGION_DATA_SIZE;
-
-
-        uint32_t free_space = REQUEST_REGION_DATA_SIZE - used;
-        available_space = free_space >= (header_data_length);
-
-        if (available_space) {
-            // There's enough space
-            ack_slot->starting_data_offset = free_data_offset;
-            ack_slot->data_size = header_data_length;
-            free_data_offset = (free_data_offset + header_data_length) % REQUEST_REGION_DATA_SIZE;
-        }
-
-        pthread_mutex_unlock(&data_mutex);
-    }
-
-    available_space = false;
-    while (!available_space) {
-        pthread_mutex_lock(&ack_mutex);
-        uint32_t used = (free_ack_offset + ACK_REGION_DATA_SIZE
-                         - oldest_ack_offset)
-                        % ACK_REGION_DATA_SIZE;
-
-        uint32_t free_space = ACK_REGION_DATA_SIZE - used;
-        available_space = free_space >= (ack_data_length);
-
-        if (available_space) {
-            // There's enough space
-            ack_slot->starting_ack_data_offset = free_ack_offset;
-            ack_slot->ack_data_size = ack_data_length;
-            free_ack_offset = (free_ack_offset + ack_data_length) % ACK_REGION_DATA_SIZE;
-        }
-
-        pthread_mutex_unlock(&ack_mutex);
     }
 
     return ack_slot;
@@ -230,4 +197,26 @@ void *ack_thread(__attribute__((unused)) void *_args) {
     }
 
     return NULL;
+}
+
+static void block_for_available_space(uint32_t required_space, pthread_mutex_t *mutex, uint32_t *free_offset, uint32_t oldest_offset, uint32_t *out_starting_offset) {
+    bool available_space = false;
+    while (!available_space) {
+        pthread_mutex_lock(mutex);
+        uint32_t used = (*free_offset + REQUEST_REGION_DATA_SIZE
+                         - oldest_offset)
+                        % REQUEST_REGION_DATA_SIZE;
+
+
+        uint32_t free_space = REQUEST_REGION_DATA_SIZE - used;
+        available_space = free_space >= (required_space);
+
+        if (available_space) {
+            // There's enough space
+            *out_starting_offset = *free_offset;
+            *free_offset = (*free_offset + required_space) % REQUEST_REGION_DATA_SIZE;
+        }
+
+        pthread_mutex_unlock(mutex);
+    }
 }
