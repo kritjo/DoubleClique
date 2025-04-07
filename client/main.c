@@ -62,7 +62,7 @@ int main(int argc, char *argv[]) {
 
     printf("Loading table that has %lu index buckets\n", INDEX_BUCKETS);
 
-#define PRELOAD_LOOP_COUNT 30000
+#define PRELOAD_LOOP_COUNT 52428
     char *keys[PRELOAD_LOOP_COUNT];
     uint32_t index = 0;
 
