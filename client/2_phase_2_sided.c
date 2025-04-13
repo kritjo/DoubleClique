@@ -133,17 +133,17 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
         }
 
         found_candidates_t found_candidates[REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET];
-        uint32_t found_contingency_candidates_count = 0;
+        uint32_t found_candidates_count = 0;
         for (uint32_t version_count_index = 0; version_count_index < candidate_count; version_count_index++) {
             if (candidates[version_count_index].count >= (REPLICA_COUNT + 1) / 2) {
                 for (uint32_t i = 0; i < REPLICA_COUNT; i++) {
-                    found_candidates[found_contingency_candidates_count].index_entry[i] = candidates[version_count_index].index_entry[i];
+                    found_candidates[found_candidates_count].index_entry[i] = candidates[version_count_index].index_entry[i];
                 }
-                found_candidates[found_contingency_candidates_count++].version_number = candidates[version_count_index].version_number;
+                found_candidates[found_candidates_count++].version_number = candidates[version_count_index].version_number;
             }
         }
 
-        if (found_contingency_candidates_count == 0) {
+        if (found_candidates_count == 0) {
             if (ack_count == REPLICA_COUNT) {
                 // If we have gotten replies from all replicas and can not find a quorum, it is an error
                 ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
@@ -157,7 +157,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
         }
 
         // Did find one or more quorums, lets try to get them.
-        for (uint32_t candidate_index = 0; candidate_index < found_contingency_candidates_count; candidate_index++) {
+        for (uint32_t candidate_index = 0; candidate_index < found_candidates_count; candidate_index++) {
             for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
 
                 // Check if this replica has that data
