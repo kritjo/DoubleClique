@@ -18,6 +18,8 @@
 #include "sequence.h"
 #include "xxhash.h"
 #include "xxh_seed.h"
+#include "garbage_collection_queue.h"
+#include "garbage_collection.h"
 
 static request_region_t *request_region;
 static struct buddy *buddy = NULL;
@@ -30,13 +32,9 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
 
 static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot, const char *data_pointer, uint32_t transfer_length, size_t return_offset, sci_sequence_t ack_sequence);
 
-static inline void *buddy_wrapper(size_t size) {
-    return buddy_malloc(buddy, size);
-}
-
 static void put(request_region_poller_thread_args_t *args, header_slot_t slot, uint32_t current_head_slot,
          volatile replica_ack_t *replica_ack, uint32_t key_hash, char *key, sci_sequence_t ack_sequence,
-         size_t offset) {
+         size_t offset, queue_t *queue) {
     char *data_slot_start = ((char *) request_region) + sizeof(request_region_t);
 
     char *data = malloc(slot.value_length);
@@ -72,13 +70,23 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
         return;
     }
 
-    bool update;
     index_entry_t *index_slot = existing_slot_for_key(args->index_region, args->data_region, key_hash,
                                                       slot.key_length, key);
 
+    void *new_data_slot;
     // If we did not find an existing slot, we are not updating, but fresh inserting
     if (index_slot == NULL) {
-        update = false;
+        new_data_slot = buddy_malloc(buddy, slot.key_length + slot.value_length + sizeof(((header_slot_t *) 0)->version_number));
+        if (new_data_slot == NULL) {
+            existing_slot_for_key(args->index_region, args->data_region, key_hash,
+                                  slot.key_length, key);
+            send_put_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence,
+                         slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
+            printf("No data left new slot, key: %s\n", key);
+            request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+            free(data);
+            return;
+        }
 
         // Try to find an available slot
         index_slot = find_available_index_slot(args->index_region, key_hash);
@@ -91,28 +99,41 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
             free(data);
             return;
         }
+        printf("Initial put for key %s with hash %u into bucket %lu\n", key, key_hash, key_hash % INDEX_BUCKETS);
     } else {
-        update = true;
-    }
-
-    void *data_slot = find_data_slot_for_index_slot(args->data_region,
-                                                    index_slot,
-                                                    update,
-                                                    slot.key_length + slot.value_length + sizeof(((header_slot_t *) 0)->version_number),
-                                                    buddy_wrapper);
-
-    if (data_slot == NULL) {
-        send_put_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence,
-                     slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
-        printf("No data left\n");
-        request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
-        free(data);
-        return;
+        void *old_data_slot = (void *) (((char *) args->data_region) + index_slot->offset);
+        size_t new_payload_size = slot.key_length + slot.value_length + sizeof(((header_slot_t *) 0)->version_number);
+        new_data_slot = buddy_malloc(buddy, new_payload_size);
+        if (new_data_slot == NULL) {
+            if (new_payload_size <= index_slot->key_length + index_slot->data_length + sizeof(((header_slot_t *) 0)->version_number)) {
+                new_data_slot = old_data_slot;
+                // Could not find any place, reuse the old, even though it might lead to fetching the wrong data for
+                // in progress 2 phase gets.
+                printf("Reusing slot! :(\n");
+            } else {
+                send_put_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence,
+                             slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
+                printf("No data left, existing slot too small\n");
+                request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+                free(data);
+                return;
+            }
+        } else {
+            queue_item_t queue_item;
+            queue_item.buddy_allocated_addr = old_data_slot;
+            clock_gettime(CLOCK_MONOTONIC, &queue_item.t);
+            queue_item.t.tv_nsec += NS_TO_COLLECTION;
+            if (queue_item.t.tv_nsec >= 1000000000L) {
+                queue_item.t.tv_nsec += queue_item.t.tv_nsec / 1000000000L;
+                queue_item.t.tv_nsec %= 1000000000L;
+            }
+            enqueue(queue, queue_item);
+        }
     }
 
     insert_in_table(args->data_region,
                     index_slot,
-                    data_slot,
+                    new_data_slot,
                     key,
                     slot.key_length,
                     key_hash,
@@ -133,6 +154,28 @@ int request_region_poller(void *arg) {
     request_region_poller_thread_args_t *args = (request_region_poller_thread_args_t *) arg;
     init_request_region(args->sd, &request_region);
     request_region->status = REQUEST_REGION_INACTIVE;
+    queue_t *queue = malloc(sizeof(queue_t));
+    if (queue == NULL) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+    queue_init(queue);
+
+    garbage_collection_thread_args_t *garbage_collection_thread_args = malloc(sizeof(garbage_collection_thread_args_t));
+    if (garbage_collection_thread_args == NULL) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+
+    garbage_collection_thread_args->queue = queue;
+    garbage_collection_thread_args->buddy = buddy;
+
+    pthread_t gc_thread_id;
+    pthread_create(
+            &gc_thread_id,
+            NULL,
+            garbage_collection_thread,
+            garbage_collection_thread_args);
 
     // Set up buddy allocator
     void *buddy_metadata = malloc(buddy_sizeof(DATA_REGION_SIZE));
@@ -233,7 +276,7 @@ int request_region_poller(void *arg) {
 
             switch (slot.status) {
                 case HEADER_SLOT_USED_PUT:
-                    put(args, slot, current_head_slot, replica_ack, key_hash, key, ack_sequence, offset);
+                    put(args, slot, current_head_slot, replica_ack, key_hash, key, ack_sequence, offset, queue);
                     break;
                 case HEADER_SLOT_USED_GET_PHASE1:
                     // Now we need to ship our index entries for this keyhash back
@@ -262,6 +305,7 @@ int request_region_poller(void *arg) {
         }
     }
 
+    free(queue);
     return 0;
 }
 

@@ -38,26 +38,6 @@ index_entry_t *find_available_index_slot(void *index_region, uint32_t key_hash) 
     return NULL;
 }
 
-// Returns a data slot for an index slot. The try_to_use_existing_data_slot parameter specifies whether we should try to
-// use the existing data_slot pointed to by the index slot.
-void *find_data_slot_for_index_slot(void *data_region, index_entry_t *index_slot, bool try_to_use_existing_data_slot, uint32_t payload_length, void *(*malloc_like)(size_t)) {
-    void *data_slot;
-
-    if (try_to_use_existing_data_slot) {
-        void *existing_data_slot = (void *) ((char *) data_region + index_slot->offset);
-
-        if (payload_length <= index_slot->key_length + index_slot->data_length + sizeof(((header_slot_t *) 0)->version_number)) {
-            data_slot = existing_data_slot;
-        } else {
-            fprintf(stderr, "Not implemented support yet for not possible state with try_to_use_existing_data_slot\n");
-            exit(EXIT_FAILURE);
-        }
-    } else {
-        data_slot = malloc_like(payload_length);
-    }
-
-    return data_slot;
-}
 
 // Given a data region, index and data slots, insert the key and value into the data table, and update the index slot
 // with the correct values
