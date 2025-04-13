@@ -198,7 +198,7 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
         exit(EXIT_FAILURE);
     }
 
-    pending_get_status.promise->get_result = GET_PENDING;
+    pending_get_status.promise->result = PROMISE_PENDING;
     pending_get_status.promise->data_len = 0;
     pending_get_status.promise->data = NULL;
 
@@ -248,7 +248,7 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
 
     clock_gettime(CLOCK_MONOTONIC, &ts_pre);
 
-    while (pending_get_status.promise->get_result == GET_PENDING) {
+    while (pending_get_status.promise->result == PROMISE_PENDING) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
         if (((ts.tv_sec - ts_pre.tv_sec) * 1000000000L + (ts.tv_nsec - ts_pre.tv_nsec)) > GET_TIMEOUT_1_SIDED_NS) {
             // Timeout!
@@ -263,7 +263,7 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
                 }
             }
 
-            pending_get_status.promise->get_result = GET_RESULT_ERROR_TIMEOUT;
+            pending_get_status.promise->result = PROMISE_TIMEOUT;
             pthread_mutex_unlock(&get_in_progress);
 
             return pending_get_status.promise;
@@ -327,7 +327,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
                    sizeof(*slot));
         }
     } else {
-        pending_get_status.promise->get_result = GET_RESULT_ERROR_TRANSFER;
+        pending_get_status.promise->result = PROMISE_ERROR_TRANSFER;
         return SCI_CALLBACK_CONTINUE;
     }
 
@@ -494,7 +494,7 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
             exit(EXIT_FAILURE);
         }
         memcpy(pending_get_status.promise->data, data_slot + args->key_len, data_length);
-        pending_get_status.promise->get_result = GET_RESULT_SUCCESS;
+        pending_get_status.promise->result = PROMISE_SUCCESS;
 
     } else {
         contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key, args->key_hash, args->key_len);
@@ -598,7 +598,7 @@ contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_t
 
     if (found_contingency_candidates_count == 0) {
         // Did not find a quorum, fail the fetch
-        pending_get_status.promise->get_result = GET_RESULT_ERROR_NO_MATCH;
+        pending_get_status.promise->result = PROMISE_ERROR_NO_MATCH;
         return;
     }
 
@@ -691,7 +691,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         pthread_mutex_unlock(&completed_contingency_fetches_mutex);
 
         if (completed_contingency_fetches_count == args->found_contingency_candidates_count) {
-            pending_get_status.promise->get_result = GET_RESULT_ERROR_TRANSFER;
+            pending_get_status.promise->result = PROMISE_ERROR_TRANSFER;
         }
 
         return SCI_CALLBACK_CONTINUE;
@@ -709,7 +709,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         uint32_t payload_hash = XXH32(slot, args->index_entry.key_length + data_length + sizeof(((header_slot_t *) 0)->version_number), XXH_SEED);
 
         if (payload_hash != expected_payload_hash) {
-            pending_get_status.promise->get_result = GET_RESULT_ERROR_NO_MATCH;
+            pending_get_status.promise->result = PROMISE_ERROR_NO_MATCH;
             return SCI_CALLBACK_CONTINUE;
         }
 
@@ -719,7 +719,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
             exit(EXIT_FAILURE);
         }
         memcpy(pending_get_status.promise->data, slot + args->index_entry.key_length, data_length);
-        pending_get_status.promise->get_result = GET_RESULT_SUCCESS;
+        pending_get_status.promise->result = PROMISE_SUCCESS;
     } else {
         // No match, if we have received all set error, if not just fall through and let another thread handle it
         pthread_mutex_lock(&completed_contingency_fetches_mutex);
@@ -732,7 +732,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         pthread_mutex_unlock(&completed_contingency_fetches_mutex);
 
         if (completed_contingency_fetches_count == args->found_contingency_candidates_count) {
-            pending_get_status.promise->get_result = GET_RESULT_ERROR_NO_MATCH;
+            pending_get_status.promise->result = PROMISE_ERROR_NO_MATCH;
         }
     }
 

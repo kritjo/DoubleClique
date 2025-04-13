@@ -101,7 +101,7 @@ bool consume_put_ack_slot(ack_slot_t *ack_slot) {
     // If we got a quorum of success acks, count as success
     if (ack_success_count >= (REPLICA_COUNT + 1) / 2) {
         // Success!
-        ack_slot->promise->put_result = PUT_RESULT_SUCCESS;
+        ack_slot->promise->result = PROMISE_SUCCESS;
         return true;
     }
 
@@ -122,13 +122,13 @@ bool consume_put_ack_slot(ack_slot_t *ack_slot) {
         }
 
         if (mix) {
-            ack_slot->promise->put_result = PUT_RESULT_ERROR_MIX;
+            ack_slot->promise->result = PROMISE_ERROR_MIX;
             return true;
         }
 
         switch (replica_ack_type) {
             case REPLICA_ACK_ERROR_OUT_OF_SPACE:
-                ack_slot->promise->put_result = PUT_RESULT_ERROR_OUT_OF_SPACE;
+                ack_slot->promise->result = PROMISE_ERROR_OUT_OF_SPACE;
                 return true;
             case REPLICA_ACK_SUCCESS:
             case REPLICA_NOT_ACKED:
@@ -143,7 +143,7 @@ bool consume_put_ack_slot(ack_slot_t *ack_slot) {
     clock_gettime(CLOCK_MONOTONIC, &end_p);
 
     if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= PUT_TIMEOUT_NS) {
-        ack_slot->promise->put_result = PUT_RESULT_ERROR_TIMEOUT;
+        ack_slot->promise->result = PROMISE_TIMEOUT;
         return true;
     }
 

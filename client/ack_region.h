@@ -4,25 +4,25 @@
 #include <stdint.h>
 #include "request_region.h"
 
-enum put_request_promise_status {
-    PUT_PENDING,
-    PUT_RESULT_SUCCESS,
-    PUT_RESULT_ERROR_TIMEOUT,
-    PUT_RESULT_ERROR_OUT_OF_SPACE,
-    PUT_RESULT_ERROR_MIX,
+enum request_promise_status {
+    PROMISE_PENDING,
+    PROMISE_SUCCESS,
+    PROMISE_TIMEOUT,
+    PROMISE_ERROR_MIX,
+    PROMISE_ERROR_OUT_OF_SPACE,
+    PROMISE_ERROR_NO_MATCH,
+    PROMISE_ERROR_TRANSFER,
+    REQUEST_PROMISE_STATUS_COUNT
 };
 
-enum get_request_promise_status {
-    GET_PENDING,
-    GET_RESULT_SUCCESS,
-    GET_RESULT_ERROR_NO_MATCH,
-    GET_RESULT_ERROR_TIMEOUT,
-    GET_RESULT_ERROR_TRANSFER
+enum request_operation {
+    OP_GET,
+    OP_PUT
 };
 
 typedef struct {
-    _Atomic enum put_request_promise_status put_result;
-    _Atomic enum get_request_promise_status get_result;
+    _Atomic enum request_promise_status result;
+    _Atomic enum request_operation operation;
     _Atomic uint32_t data_len;
     _Atomic(void *) data;
 } request_promise_t;

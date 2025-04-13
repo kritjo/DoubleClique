@@ -68,8 +68,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
     clock_gettime(CLOCK_MONOTONIC, &end_p);
 
     if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
-        ack_slot->promise->get_result = GET_RESULT_ERROR_TIMEOUT;
-        free(ack_slot->key);
+        ack_slot->promise->result = PROMISE_TIMEOUT;
         get_2_sided_decrement();
         return true;
     }
@@ -147,8 +146,8 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
         if (found_contingency_candidates_count == 0) {
             if (ack_count == REPLICA_COUNT) {
                 // If we have gotten replies from all replicas and can not find a quorum, it is an error
-                ack_slot->promise->get_result = GET_RESULT_ERROR_NO_MATCH;
-                free(ack_slot->key);
+                ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
+                printf("no cands\n");
                 get_2_sided_decrement();
                 return true;
             } else {
@@ -208,8 +207,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     clock_gettime(CLOCK_MONOTONIC, &end_p);
 
     if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
-        ack_slot->promise->get_result = GET_RESULT_ERROR_TIMEOUT;
-        free(ack_slot->key);
+        ack_slot->promise->result = PROMISE_TIMEOUT;
         return true;
     }
 
@@ -231,8 +229,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
 
     uint32_t hash = XXH32(ack_data, ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t), XXH_SEED);
     if (hash != expected_hash) {
-        ack_slot->promise->get_result = GET_RESULT_ERROR_NO_MATCH;
-        free(ack_slot->key);
+        ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
         return true;
     }
 
@@ -243,7 +240,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     }
 
     memcpy(ack_slot->promise->data, ack_data + ack_slot->key_len, ack_slot->value_len);
-    ack_slot->promise->get_result = GET_RESULT_SUCCESS;
+    ack_slot->promise->result = PROMISE_SUCCESS;
     return true;
 }
 

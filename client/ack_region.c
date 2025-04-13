@@ -117,10 +117,12 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
 
             switch (ack_slot->request_type) {
                 case PUT:
-                    promise->put_result = PUT_PENDING;
+                    promise->result = PROMISE_PENDING;
+                    promise->operation = OP_PUT;
                     break;
                 case GET_PHASE1:
-                    promise->get_result = GET_PENDING;
+                    promise->result = PROMISE_PENDING;
+                    promise->operation = OP_GET;
                     break;
                 case GET_PHASE2:
                     break;
