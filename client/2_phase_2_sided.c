@@ -45,7 +45,6 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
     }
 
     uint32_t key_hash = XXH32(hash_data, key_len, XXH_SEED);
-    ack_slot->key = hash_data;
 
     ack_slot->key_hash = key_hash;
 
