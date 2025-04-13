@@ -79,7 +79,7 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
         bool available_get_queue_space = false;
         while (!available_get_queue_space) {
             pthread_mutex_lock(&get_2_sided_mutex);
-            available_get_queue_space = current_get_2_sided_requests < MAX_SIMULTANEOUS_GET_REQUESTS;
+            available_get_queue_space = current_get_2_sided_requests < QUEUE_SPACE;
             if (available_get_queue_space) {
                 current_get_2_sided_requests++;
             }
