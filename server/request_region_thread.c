@@ -82,7 +82,6 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
                                   slot.key_length, key);
             send_put_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence,
                          slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
-            printf("No data left new slot, key: %s\n", key);
             request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
             free(data);
             return;
@@ -99,7 +98,6 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
             free(data);
             return;
         }
-        printf("Initial put for key %s with hash %u into bucket %lu\n", key, key_hash, key_hash % INDEX_BUCKETS);
     } else {
         void *old_data_slot = (void *) (((char *) args->data_region) + index_slot->offset);
         size_t new_payload_size = slot.key_length + slot.value_length + sizeof(((header_slot_t *) 0)->version_number);
@@ -109,11 +107,9 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
                 new_data_slot = old_data_slot;
                 // Could not find any place, reuse the old, even though it might lead to fetching the wrong data for
                 // in progress 2 phase gets.
-                printf("Reusing slot! :(\n");
             } else {
                 send_put_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence,
                              slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
-                printf("No data left, existing slot too small\n");
                 request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
                 free(data);
                 return;

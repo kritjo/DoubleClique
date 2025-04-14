@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 // TODO: These might have some issues for the last bucket/slot maybe
-#define INDEX_REGION_SIZE 0x800000
+#define INDEX_REGION_SIZE 0x200000
 #define INDEX_SLOTS_COUNT (INDEX_REGION_SIZE/sizeof(index_entry_t))
 #define INDEX_SLOTS_PR_BUCKET 4
 #define INDEX_BUCKETS (INDEX_SLOTS_COUNT/INDEX_SLOTS_PR_BUCKET)
@@ -15,7 +15,7 @@
 #define REPLICA_DATA_SEGMENT_ID(index) (200 + index)
 
 
-#define DATA_REGION_SIZE 0x400000
+#define DATA_REGION_SIZE 0x1000000
 
 typedef struct {
     uint32_t hash;

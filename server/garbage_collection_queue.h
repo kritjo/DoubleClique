@@ -4,8 +4,8 @@
 #include <stddef.h>
 #include <pthread.h>
 
-#define QUEUE_SPACE 2000000
-#define NS_TO_COLLECTION 100000
+#define QUEUE_SPACE 100000
+#define NS_TO_COLLECTION 1000
 
 typedef struct {
     struct timespec t;

@@ -146,7 +146,6 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
             if (ack_count == REPLICA_COUNT) {
                 // If we have gotten replies from all replicas and can not find a quorum, it is an error
                 ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
-                printf("no cands\n");
                 get_2_sided_decrement();
                 return true;
             } else {
@@ -154,6 +153,8 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                 return false;
             }
         }
+
+        uint32_t shipped = 0;
 
         // Did find one or more quorums, lets try to get them.
         for (uint32_t candidate_index = 0; candidate_index < found_candidates_count; candidate_index++) {
@@ -181,6 +182,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                 queue_item.promise = ack_slot->promise;
 
                 enqueue(queue_item);
+                shipped++;
 
                 break;
             }
@@ -194,6 +196,12 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
          * C: We have hit a good candidate in phase 2.
          * We would however be careful as to not get a deadlock with the request queue being filled up by only phase1
          * requests. */
+        if (shipped == 0) {
+            ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
+            get_2_sided_decrement();
+            return true;
+        }
+
         return true;
     }
 
@@ -217,7 +225,8 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
 
     if (ack_slot->replica_ack_instances[0]->replica_ack_type != REPLICA_ACK_SUCCESS) {
         fprintf(stderr, "Unsupported ack state for phase2\n");
-        exit(EXIT_FAILURE);
+        ack_slot->promise->result = PROMISE_ERROR_TRANSFER;
+        return true;
     }
 
     // First do verification

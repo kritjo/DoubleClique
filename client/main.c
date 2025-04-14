@@ -15,7 +15,7 @@
 #include "ack_region.h"
 #include "2_phase_2_sided.h"
 
-#define NUM_KEYS 524//28
+#define NUM_KEYS 13107
 #define THETA 0.99
 #define NUM_SAMPLES 100000
 
@@ -80,7 +80,6 @@ int main(int argc, char *argv[]) {
 
         while (promise->result == PROMISE_PENDING);
         if (promise->result == PROMISE_SUCCESS) {
-            printf("key: %s\n", keys[index]);
             index++;
         }
 

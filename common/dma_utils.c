@@ -10,7 +10,6 @@ void block_for_dma(sci_dma_queue_t dma_queue) {
     dma_state = SCIDMAQueueState(dma_queue);
 
     while (dma_state == SCI_DMAQUEUE_POSTED) {
-        printf("Waiting for q\n");
         SEOE(SCIWaitForDMAQueue, dma_queue, SCI_INFINITE_TIMEOUT, NO_FLAGS);
         dma_state = SCIDMAQueueState(dma_queue);
     }

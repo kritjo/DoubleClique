@@ -415,7 +415,6 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
     uint32_t tried_vnrs[INDEX_SLOTS_PR_BUCKET];
 
     if (status != SCI_ERR_OK) {
-        printf("failed preferred: %s. Key len: %d, value len: %d\n", SCIGetErrorString(status), args->key_len, args->data_len);
         contingency_backend_fetch(NULL, 0, args->key, args->key_hash, args->key_len);
         return SCI_CALLBACK_CONTINUE;
     }
