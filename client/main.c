@@ -9,6 +9,7 @@
 
 #include "sisci_glob_defs.h"
 
+#include "super_fast_hash.h"
 #include "2_phase_1_sided.h"
 #include "put.h"
 #include "request_region_connection.h"

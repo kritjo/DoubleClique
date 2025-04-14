@@ -8,8 +8,8 @@
 #include "sisci_glob_defs.h"
 #include "request_region.h"
 #include "index_data_protocol.h"
-#include "xxh_seed.h"
-#include "xxhash.h"
+
+#include "super_fast_hash.h"
 
 static sci_dma_queue_t replica_dma_queues_main[REPLICA_COUNT];
 static sci_dma_queue_t replica_dma_queues_secondary[REPLICA_COUNT];
@@ -181,7 +181,7 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
     pthread_t thread_ids[REPLICA_COUNT];
 
     // First we need to get the hash of the key
-    uint32_t key_hash = XXH32(key, key_len, XXH_SEED);
+    uint32_t key_hash = super_fast_hash(key, key_len);
 
     // Now we need to read index buckets from the replicas this should be done asynchronously preferably, so that
     // we can get the data slot from the one that answers first
@@ -480,7 +480,8 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
         uint32_t expected_payload_hash = *((uint32_t *) (data_slot + args->key_len + data_length));
         *((uint32_t *) (data_slot + args->key_len + data_length)) = (uint32_t) version_number;
 
-        uint32_t payload_hash = XXH32(data_slot, args->key_len + data_length + sizeof(((header_slot_t *) 0)->version_number), XXH_SEED);
+        uint32_t payload_hash = super_fast_hash(data_slot, (int) (args->key_len + data_length +
+                                                                  sizeof(((header_slot_t *) 0)->version_number)));
 
         if (payload_hash != expected_payload_hash) {
             contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key, args->key_hash, args->key_len);
@@ -705,7 +706,8 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         uint32_t expected_payload_hash = *((uint32_t *) (slot + args->index_entry.key_length + data_length));
         *((uint32_t *) (slot + args->index_entry.key_length + data_length)) = (uint32_t) args->index_entry.version_number;
 
-        uint32_t payload_hash = XXH32(slot, args->index_entry.key_length + data_length + sizeof(((header_slot_t *) 0)->version_number), XXH_SEED);
+        uint32_t payload_hash = super_fast_hash(slot, (int) (args->index_entry.key_length + data_length +
+                                                                  sizeof(((header_slot_t *) 0)->version_number)));
 
         if (payload_hash != expected_payload_hash) {
             pending_get_status.promise->result = PROMISE_ERROR_NO_MATCH;

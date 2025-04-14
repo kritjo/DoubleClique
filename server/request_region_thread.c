@@ -8,6 +8,7 @@
 #include <string.h>
 #include "request_region.h"
 #include "sisci_glob_defs.h"
+#include "super_fast_hash.h"
 
 #include "index_data_protocol.h"
 
@@ -16,8 +17,6 @@
 #include "buddy_alloc.h"
 #include "request_region_utils.h"
 #include "sequence.h"
-#include "xxhash.h"
-#include "xxh_seed.h"
 #include "garbage_collection_queue.h"
 #include "garbage_collection.h"
 
@@ -60,7 +59,8 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
 
     memcpy(hash_data + slot.key_length + slot.value_length, &slot.version_number, sizeof(((header_slot_t *) 0)->version_number));
 
-    uint32_t payload_hash = XXH32(hash_data, slot.key_length + slot.value_length + sizeof(((header_slot_t *) 0)->version_number), XXH_SEED);
+    uint32_t payload_hash = super_fast_hash(hash_data, (int) (slot.key_length + slot.value_length +
+                                                              sizeof(((header_slot_t *) 0)->version_number)));
     free(hash_data);
 
     if (payload_hash != slot.payload_hash) {
@@ -266,7 +266,7 @@ int request_region_poller(void *arg) {
             }
             key[slot.key_length] = '\0';
 
-            uint32_t key_hash = XXH32((void *) key, slot.key_length, XXH_SEED);
+            uint32_t key_hash = super_fast_hash((void *) key, slot.key_length);
 
             // UP until this point is equal for both request types.
 
