@@ -27,7 +27,7 @@ ack_slot_t ack_slots[MAX_REQUEST_SLOTS];
 sci_local_segment_t ack_segment;
 sci_map_t ack_map;
 
-static void block_for_available_space(uint32_t required_space, uint32_t *free_offset, uint32_t oldest_offset, uint32_t *out_starting_offset);
+static void block_for_available_space(uint32_t required_space, uint32_t *free_offset, uint32_t oldest_offset, uint32_t *out_starting_offset, uint32_t region_space);
 
 void init_ack_region(sci_desc_t sd) {
     sci_error_t sci_error;
@@ -132,10 +132,10 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
             ack_slot->version_number = version_number;
 
             // Wait for enough space
-            block_for_available_space(header_data_length, &free_data_offset, oldest_data_offset, &ack_slot->starting_data_offset);
+            block_for_available_space(header_data_length, &free_data_offset, oldest_data_offset, &ack_slot->starting_data_offset, REQUEST_REGION_DATA_SIZE);
             ack_slot->data_size = header_data_length;
 
-            block_for_available_space(ack_data_length, &free_ack_offset, oldest_ack_offset, &ack_slot->starting_ack_data_offset);
+            block_for_available_space(ack_data_length, &free_ack_offset, oldest_ack_offset, &ack_slot->starting_ack_data_offset, ACK_REGION_DATA_SIZE);
             ack_slot->ack_data_size = ack_data_length;
 
             free_header_slot = (free_header_slot + 1) % MAX_REQUEST_SLOTS;
@@ -147,9 +147,7 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
 }
 
 void get_2_sided_decrement(void) {
-    pthread_mutex_lock(&ack_mutex);
     current_get_2_sided_requests--;
-    pthread_mutex_unlock(&ack_mutex);
 }
 
 void *ack_thread(__attribute__((unused)) void *_args) {
@@ -169,7 +167,7 @@ void *ack_thread(__attribute__((unused)) void *_args) {
                 break;
             case GET_PHASE2:
                 consumed = consume_get_ack_slot_phase2(ack_slot);
-                if (consumed) current_get_2_sided_requests--;
+                if (consumed) get_2_sided_decrement();
                 break;
             default:
                 fprintf(stderr, "Got illegal request type\n");
@@ -192,22 +190,20 @@ void *ack_thread(__attribute__((unused)) void *_args) {
     return NULL;
 }
 
-static void block_for_available_space(uint32_t required_space, uint32_t *free_offset, uint32_t oldest_offset, uint32_t *out_starting_offset) {
+static void block_for_available_space(uint32_t required_space, uint32_t *free_offset, uint32_t oldest_offset, uint32_t *out_starting_offset, uint32_t region_space) {
     bool available_space = false;
     while (!available_space) {
-        uint32_t used = (*free_offset + REQUEST_REGION_DATA_SIZE
+        uint32_t used = (*free_offset + region_space
                          - oldest_offset)
-                        % REQUEST_REGION_DATA_SIZE;
+                        % region_space;
 
-
-        uint32_t free_space = REQUEST_REGION_DATA_SIZE - used;
+        uint32_t free_space = region_space - used;
         available_space = free_space >= (required_space);
 
         if (available_space) {
             // There's enough space
             *out_starting_offset = *free_offset;
-            *free_offset = (*free_offset + required_space) % REQUEST_REGION_DATA_SIZE;
+            *free_offset = (*free_offset + required_space) % region_space;
         }
-
     }
 }
