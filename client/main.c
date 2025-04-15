@@ -94,8 +94,24 @@ int main(int argc, char *argv[]) {
 
     printf("Loaded table with %d keys\n", NUM_KEYS);
 
+
     request_promise_t *promises[NUM_SAMPLES];
     uint32_t errors[REQUEST_PROMISE_STATUS_COUNT] = {0};
+
+    printf("warming up\n");
+    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
+        promises[i] = do_random_action(cdf, sample_data, 8, 0.9, true);
+    }
+    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
+        while(promises[i]->result == PROMISE_PENDING);
+        if (promises[i]->result == PROMISE_SUCCESS) {
+            if (promises[i]->operation == OP_GET) {
+                free(promises[i]->data);
+            }
+        }
+        free(promises[i]);
+    }
+    printf("warmed up\n");
 
     // Do 90-10 get-put
     clock_gettime(CLOCK_MONOTONIC, &start);
