@@ -3,8 +3,6 @@ add_library(commonLib STATIC
         super_fast_hash.h
         sisci_glob_defs.h
         buddy_alloc.h
-        linked_list.c
-        linked_list.h
         request_region.h
         index_data_protocol.h
         get_node_id.c
