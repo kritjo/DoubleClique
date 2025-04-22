@@ -2,7 +2,9 @@ cmake_minimum_required(VERSION 3.28)
 project(DoubleClique VERSION 0.0.1 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 17)
-set(CMAKE_BUILD_TYPE Debug)
+
+set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
+set(CMAKE_BUILD_TYPE Release)
 
 add_compile_options(
     -Wall
