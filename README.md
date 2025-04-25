@@ -64,5 +64,5 @@ build/client/client 20 24 28
 ---
 
 ## Acknowledgements
-* **Paul Hsieh** – for the blazing‑fast `SuperFastHash`.  
-* **Stanislav Paskalev** – for the versatile `buddy_alloc` implementation.
+* **Paul Hsieh** – for the `SuperFastHash`.  
+* **Stanislav Paskalev** – for the `buddy_alloc` implementation.
