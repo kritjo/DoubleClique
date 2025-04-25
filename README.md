@@ -64,7 +64,5 @@ build/client/client 20 24 28
 ---
 
 ## Acknowledgements
-
-* **Dolphin Interconnect Solutions** – for the SCI hardware and SDK.  
 * **Paul Hsieh** – for the blazing‑fast `SuperFastHash`.  
 * **Stanislav Paskalev** – for the versatile `buddy_alloc` implementation.
