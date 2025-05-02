@@ -20,7 +20,6 @@
 #define THETA 0.99
 #define NUM_SAMPLES 100000
 #define VALUE_LEN 8
-#define DO_ZIPF false
 #define DO_NON_BATCH true
 
 static sci_desc_t sd;
