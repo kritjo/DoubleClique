@@ -321,29 +321,38 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
                                 uint32_t key_hash, char *index_region, sci_sequence_t ack_sequence, bool write_back,
                                 size_t write_back_offset, char *data_region) {
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
-    // TODO: Should only write back index entries with correct key_hash perhaps?
-    bool written = false;
-    for (uint32_t i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
-        replica_ack_instance->bucket[i] = *((index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, i));
-        if (write_back &&
-            !written &&
-            replica_ack_instance->bucket[i].status == 1 &&
-            replica_ack_instance->bucket[i].hash == key_hash &&
-            replica_ack_instance->bucket[i].key_length + replica_ack_instance->bucket[i].data_length <= SPECULATIVE_SIZE
-        ) {
-            uint32_t transfer_length = replica_ack_instance->bucket[i].key_length + replica_ack_instance->bucket[i].data_length + sizeof(uint32_t);
-            char *data_pointer = data_region + replica_ack_instance->bucket[i].offset;
-            uint32_t *hash = (uint32_t *) (data_pointer + replica_ack_instance->bucket[i].key_length + replica_ack_instance->bucket[i].data_length);
 
-            for (uint32_t j = 0; j < transfer_length; j++) {
-                *(((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + write_back_offset + j) = *(data_pointer + j);
+    // Fast code is ugly
+    uint32_t i;
+    if (write_back) {
+        for (i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
+            volatile index_entry_t *entry = &replica_ack_instance->bucket[i];
+            *entry = *((index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, i));
+            uint32_t transfer_length = entry->key_length + entry->data_length + sizeof(uint32_t);
+
+            if (entry->hash == key_hash &&
+                transfer_length <= SPECULATIVE_SIZE) {
+
+                char *data_pointer = data_region + entry->offset;
+                volatile char *dest = ((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + write_back_offset;
+
+                for (uint32_t j = 0; j < transfer_length; j++) {
+                    dest[j] = data_pointer[j];
+                }
+
+                replica_ack_instance->index_entry_written = (int) i;
+
+                goto found; // Only write back the first matching entry
             }
-
-            replica_ack_instance->index_entry_written = (int) i;
-
-            written = true;
+        }
+    } else {
+        for (i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
+            replica_ack_instance->bucket[i] = *((index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, i));
+            found:
+            continue;
         }
     }
+
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
     check_for_errors(ack_sequence);
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
