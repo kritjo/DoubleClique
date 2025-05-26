@@ -27,7 +27,8 @@ static void send_put_ack(uint8_t replica_index, volatile replica_ack_t *replica_
                          sci_sequence_t ack_sequence, uint32_t version_number, enum replica_ack_type ack_type);
 
 static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
-                                uint32_t key_hash, char *index_region, sci_sequence_t ack_sequence);
+                                uint32_t key_hash, char *index_region, sci_sequence_t ack_sequence, bool write_back,
+                                size_t write_back_offset, char *data_region);
 
 static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot, const char *data_pointer, uint32_t transfer_length, size_t return_offset, sci_sequence_t ack_sequence);
 
@@ -280,7 +281,8 @@ int request_region_poller(void *arg) {
                         break;
                     }
                     send_get_ack_phase1(args->replica_number, replica_ack, current_head_slot, key_hash,
-                                        args->index_region, ack_sequence);
+                                        args->index_region, ack_sequence, args->replica_number == slot.replica_write_back_hint,
+                                        slot.return_offset, args->data_region);
                     break;
                 case HEADER_SLOT_USED_GET_PHASE2:
                     if (slot.replica_write_back_hint == args->replica_number) {
@@ -309,16 +311,38 @@ static void send_put_ack(uint8_t replica_index, volatile replica_ack_t *replica_
                          sci_sequence_t ack_sequence, uint32_t version_number, enum replica_ack_type ack_type) {
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
     replica_ack_instance->version_number = version_number;
+    replica_ack_instance->index_entry_written = -1;
     SCIStoreBarrier(ack_sequence, NO_FLAGS);
     replica_ack_instance->replica_ack_type = ack_type;
     SCIFlush(ack_sequence, NO_FLAGS); //TODO: is this needed?
 }
 
 static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
-                                uint32_t key_hash, char *index_region, sci_sequence_t ack_sequence) {
+                                uint32_t key_hash, char *index_region, sci_sequence_t ack_sequence, bool write_back,
+                                size_t write_back_offset, char *data_region) {
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
+    // TODO: Should only write back index entries with correct key_hash perhaps?
+    bool written = false;
     for (uint32_t i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
         replica_ack_instance->bucket[i] = *((index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, i));
+        if (write_back &&
+            !written &&
+            replica_ack_instance->bucket[i].status == 1 &&
+            replica_ack_instance->bucket[i].hash == key_hash &&
+            replica_ack_instance->bucket[i].key_length + replica_ack_instance->bucket[i].data_length <= SPECULATIVE_SIZE
+        ) {
+            uint32_t transfer_length = replica_ack_instance->bucket[i].key_length + replica_ack_instance->bucket[i].data_length + sizeof(uint32_t);
+            char *data_pointer = data_region + replica_ack_instance->bucket[i].offset;
+            uint32_t *hash = (uint32_t *) (data_pointer + replica_ack_instance->bucket[i].key_length + replica_ack_instance->bucket[i].data_length);
+
+            for (uint32_t j = 0; j < transfer_length; j++) {
+                *(((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + write_back_offset + j) = *(data_pointer + j);
+            }
+
+            replica_ack_instance->index_entry_written = (int) i;
+
+            written = true;
+        }
     }
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
     check_for_errors(ack_sequence);
@@ -330,7 +354,7 @@ static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_point
     for (uint32_t i = 0; i < transfer_length; i++) {
         *(((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + return_offset + i) = *(data_pointer + i);
     }
-
+    replica_ack_instance->index_entry_written = -1;
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
     check_for_errors(ack_sequence);
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;

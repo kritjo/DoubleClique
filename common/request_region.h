@@ -30,6 +30,8 @@ typedef struct {
     uint32_t version_number;
     index_entry_t bucket[INDEX_SLOTS_PR_BUCKET]; // Only valid for GETs
     enum replica_ack_type replica_ack_type;
+    int index_entry_written; // -1 always, except when writeback is indicated to replica in GET phase 1, then, index
+                             // of written index_entry IFF it was not too big
 } replica_ack_t;
 
 enum header_slot_status {

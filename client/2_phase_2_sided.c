@@ -10,6 +10,8 @@
 #include "phase_2_queue.h"
 #include "sequence.h"
 
+#define WRITE_BACK_REPLICA 0
+
 static void *phase2_thread(__attribute__((unused)) void *_args);
 
 void init_2_phase_2_sided_get(void) {
@@ -24,7 +26,7 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
     // Then wait until we have a quorum
     // Then fetch data from preferred backend
 
-    ack_slot_t *ack_slot = get_ack_slot_blocking(GET_PHASE1, key_len, 0, key_len, 0, 0, NULL);
+    ack_slot_t *ack_slot = get_ack_slot_blocking(GET_PHASE1, key_len, 0, key_len, SPECULATIVE_SIZE, 0, NULL);
 
     uint32_t starting_offset = ack_slot->starting_data_offset;
     uint32_t current_offset = starting_offset;
@@ -51,8 +53,8 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
     ack_slot->header_slot_WRITE_ONLY->offset = (size_t) starting_offset;
     ack_slot->header_slot_WRITE_ONLY->key_length = key_len;
     ack_slot->header_slot_WRITE_ONLY->value_length = 0;
-    ack_slot->header_slot_WRITE_ONLY->replica_write_back_hint = 0;
-    ack_slot->header_slot_WRITE_ONLY->return_offset = 0;
+    ack_slot->header_slot_WRITE_ONLY->replica_write_back_hint = WRITE_BACK_REPLICA; // TODO: Use 'best' replica
+    ack_slot->header_slot_WRITE_ONLY->return_offset = ack_slot->starting_ack_data_offset;
     ack_slot->header_slot_WRITE_ONLY->version_number = ack_slot->version_number;
     check_for_errors(request_sequence);
     ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_GET_PHASE1;
@@ -119,13 +121,29 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                         found = true;
                         candidates[candidate_index].count++;
                         candidates[candidate_index].index_entry[replica_index] = slot;
+
+                        if (replica_index == WRITE_BACK_REPLICA &&
+                            replica_ack_instance->index_entry_written == slot_index
+                        ) {
+                            candidates[candidate_count].write_back = true;
+                            candidates[candidate_index++].write_back_offset = ack_slot->starting_ack_data_offset;
+                        }
                     }
                 }
 
                 if (!found) {
                     candidates[candidate_count].version_number = slot.version_number;
                     candidates[candidate_count].index_entry[replica_index] = slot;
-                    candidates[candidate_count++].count = 1;
+                    candidates[candidate_count].count = 1;
+
+                    if (replica_index == WRITE_BACK_REPLICA &&
+                        replica_ack_instance->index_entry_written == slot_index
+                    ) {
+                        candidates[candidate_count].write_back = true;
+                        candidates[candidate_count++].write_back_offset = ack_slot->starting_ack_data_offset;
+                    } else {
+                        candidates[candidate_count++].write_back = false;
+                    }
                 }
             }
         }
@@ -137,6 +155,8 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                 for (uint32_t i = 0; i < REPLICA_COUNT; i++) {
                     found_candidates[found_candidates_count].index_entry[i] = candidates[version_count_index].index_entry[i];
                 }
+                found_candidates[found_candidates_count].write_back = candidates[version_count_index].write_back;
+                found_candidates[found_candidates_count].write_back_offset = candidates[version_count_index].write_back_offset;
                 found_candidates[found_candidates_count++].version_number = candidates[version_count_index].version_number;
             }
         }
@@ -169,6 +189,27 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                 // TODO: This will make the load more heavy on the first replicas, should probably introduce some randomness
                 uint8_t key_len = (uint8_t) found_candidates[candidate_index].index_entry[replica_index].key_length;
                 uint32_t value_len = found_candidates[candidate_index].index_entry[replica_index].data_length;
+
+                if (replica_index == WRITE_BACK_REPLICA && found_candidates[candidate_index].write_back) {
+                    char *ack_data = ((char *) replica_ack) + ACK_REGION_SLOT_SIZE + found_candidates[candidate_index].write_back_offset;
+                    uint32_t expected_hash = *((uint32_t *) (ack_data + key_len + value_len));
+                    *((uint32_t *) (ack_data + key_len + value_len)) = found_candidates[candidate_index].version_number;
+
+                    uint32_t hash = super_fast_hash(ack_data, (int) (key_len + value_len + sizeof(uint32_t)));
+                    if (hash == expected_hash) {
+                        ack_slot->promise->data = malloc(value_len);
+                        if (ack_slot->promise->data == NULL) {
+                            perror("malloc");
+                            exit(EXIT_FAILURE);
+                        }
+
+                        memcpy(ack_slot->promise->data, ack_data + key_len, value_len);
+                        ack_slot->promise->result = PROMISE_SUCCESS;
+                        get_2_sided_decrement();
+                        return true;
+                    }
+                }
+
                 ptrdiff_t server_data_offset = found_candidates[candidate_index].index_entry[replica_index].offset;
                 uint32_t version_number = found_candidates[candidate_index].index_entry[replica_index].version_number;
 

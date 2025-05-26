@@ -46,11 +46,15 @@ typedef struct {
     uint32_t version_number;
     uint32_t count;
     index_entry_t index_entry[REPLICA_COUNT];
+    bool write_back;
+    uint32_t write_back_offset;
 } version_count_t;
 
 typedef struct {
     uint32_t version_number;
     index_entry_t index_entry[REPLICA_COUNT];
+    bool write_back;
+    uint32_t write_back_offset;
 } found_candidates_t;
 
 typedef struct {
