@@ -20,6 +20,7 @@
 #include "garbage_collection_queue.h"
 #include "garbage_collection.h"
 #include "profiling.h"
+#include "super_fast_hash_circular.h"
 
 static request_region_t *request_region;
 static struct buddy *buddy = NULL;
@@ -34,40 +35,26 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
 static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot, const char *data_pointer, uint32_t transfer_length, size_t return_offset, sci_sequence_t ack_sequence);
 
 static void put(request_region_poller_thread_args_t *args, header_slot_t slot, uint32_t current_head_slot,
-         volatile replica_ack_t *replica_ack, uint32_t key_hash, char *key, sci_sequence_t ack_sequence,
-         size_t offset, queue_t *queue) {
+                volatile replica_ack_t *replica_ack, uint32_t key_hash, sci_sequence_t ack_sequence,
+                queue_t *queue) {
     char *data_slot_start = ((char *) request_region) + sizeof(request_region_t);
 
-    // Use a single allocation for both data and hash_data
-    size_t total_size = slot.value_length + slot.key_length + slot.value_length + sizeof(uint32_t);
-    char *combined_buffer = malloc(total_size);
-    if (combined_buffer == NULL) {
-        perror("malloc");
-        exit(EXIT_FAILURE);
-    }
-
-    char *data = combined_buffer;
-    char *hash_data = combined_buffer + slot.value_length;
-
-    // Copy key to hash_data
-    memcpy(hash_data, key, slot.key_length);
-
-    // Copy value to both data and hash_data
-    for (uint32_t i = 0; i < slot.value_length; i++) {
-        data[i] = data_slot_start[offset];
-        hash_data[i + slot.key_length] = data[i];  // Reuse the value we just read
-        offset = (offset + 1) % REQUEST_REGION_DATA_SIZE;
-    }
-
-    memcpy(hash_data + slot.key_length + slot.value_length, &slot.version_number, sizeof(uint32_t));
-
-    uint32_t payload_hash = super_fast_hash(hash_data, (int)(slot.key_length + slot.value_length + sizeof(uint32_t)));
+    // Compute payload hash directly from circular buffer + version number
+    uint32_t payload_hash = super_fast_hash_circular_with_uint32(
+            data_slot_start,
+            REQUEST_REGION_DATA_SIZE,
+            slot.offset,
+            (int) (slot.key_length + slot.value_length),  // key + value from circular buffer
+            slot.version_number                    // append version number
+    );
 
     if (payload_hash != slot.payload_hash) {
         request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
-        free(combined_buffer);
         return;
     }
+
+    char *key = data_slot_start + slot.offset;
+    char *data = data_slot_start + slot.offset + slot.key_length;
 
     index_entry_t *index_slot = existing_slot_for_key(args->index_region, args->data_region, key_hash,
                                                       slot.key_length, key);
@@ -82,7 +69,6 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
             send_put_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence,
                          slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
             request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
-            free(data);
             return;
         }
 
@@ -94,7 +80,6 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
             send_put_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence,
                          slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
             request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
-            free(data);
             return;
         }
     } else {
@@ -110,7 +95,6 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
                 send_put_ack(args->replica_number, replica_ack, current_head_slot, ack_sequence,
                              slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
                 request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
-                free(data);
                 return;
             }
         } else {
@@ -136,7 +120,6 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
                     slot.value_length,
                     slot.version_number,
                     slot.payload_hash);
-    free(data);
 
     // Need to do this before sending ack in case of race
     request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
@@ -254,27 +237,18 @@ int request_region_poller(void *arg) {
 
             char *data_slot_start = ((char *) request_region) + sizeof(request_region_t);
 
-            size_t offset = slot.offset;
-
-            char *key = malloc(slot.key_length + 1);
-            if (key == NULL) {
-                perror("malloc");
-                exit(EXIT_FAILURE);
-            }
-
-            for (uint32_t i = 0; i < slot.key_length; i++) {
-                key[i] = data_slot_start[offset];
-                offset = (offset + 1) % REQUEST_REGION_DATA_SIZE;
-            }
-            key[slot.key_length] = '\0';
-
-            uint32_t key_hash = super_fast_hash((void *) key, slot.key_length);
+            uint32_t key_hash = super_fast_hash_circular_optimized(
+                    data_slot_start,
+                    REQUEST_REGION_DATA_SIZE,
+                    slot.offset,
+                    slot.key_length
+            );
 
             // UP until this point is equal for both request types.
 
             switch (slot.status) {
                 case HEADER_SLOT_USED_PUT:
-                    put(args, slot, current_head_slot, replica_ack, key_hash, key, ack_sequence, offset, queue);
+                    put(args, slot, current_head_slot, replica_ack, key_hash, ack_sequence, queue);
                     break;
                 case HEADER_SLOT_USED_GET_PHASE1:
                     // Now we need to ship our index entries for this keyhash back
@@ -301,7 +275,6 @@ int request_region_poller(void *arg) {
                     exit(EXIT_FAILURE);
             }
             PROFILE_END("server_main_actloop");
-            free(key);
         }
         PROFILE_END("server_main_secondlooppart");
         print_profile_report(stdout);

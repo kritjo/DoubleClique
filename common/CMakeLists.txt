@@ -17,6 +17,8 @@ add_library(commonLib STATIC
         sequence.c
         sequence.h
         profiling.h
+        super_fast_hash_circular.c
+        super_fast_hash_circular.h
 )
 
 target_include_directories(commonLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
