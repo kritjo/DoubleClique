@@ -256,7 +256,6 @@ int request_region_poller(void *arg) {
 
             size_t offset = slot.offset;
 
-            // TODO: We dont really need this, its just nice to have the key for debugging purposes, we could just have a pointer into the slot
             char *key = malloc(slot.key_length + 1);
             if (key == NULL) {
                 perror("malloc");
