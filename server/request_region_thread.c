@@ -19,6 +19,7 @@
 #include "sequence.h"
 #include "garbage_collection_queue.h"
 #include "garbage_collection.h"
+#include "profiling.h"
 
 static request_region_t *request_region;
 static struct buddy *buddy = NULL;
@@ -37,37 +38,34 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
          size_t offset, queue_t *queue) {
     char *data_slot_start = ((char *) request_region) + sizeof(request_region_t);
 
-    char *data = malloc(slot.value_length);
-    if (data == NULL) {
+    // Use a single allocation for both data and hash_data
+    size_t total_size = slot.value_length + slot.key_length + slot.value_length + sizeof(uint32_t);
+    char *combined_buffer = malloc(total_size);
+    if (combined_buffer == NULL) {
         perror("malloc");
         exit(EXIT_FAILURE);
     }
 
-    // TODO: This could be a function, shared with client
-    char *hash_data = malloc(slot.key_length + slot.value_length + sizeof(((header_slot_t *) 0)->version_number));
-    if (hash_data == NULL) {
-        perror("malloc");
-        exit(EXIT_FAILURE);
-    }
+    char *data = combined_buffer;
+    char *hash_data = combined_buffer + slot.value_length;
 
+    // Copy key to hash_data
     memcpy(hash_data, key, slot.key_length);
 
+    // Copy value to both data and hash_data
     for (uint32_t i = 0; i < slot.value_length; i++) {
         data[i] = data_slot_start[offset];
-        hash_data[i + slot.key_length] = data_slot_start[offset];
+        hash_data[i + slot.key_length] = data[i];  // Reuse the value we just read
         offset = (offset + 1) % REQUEST_REGION_DATA_SIZE;
     }
 
-    memcpy(hash_data + slot.key_length + slot.value_length, &slot.version_number, sizeof(((header_slot_t *) 0)->version_number));
+    memcpy(hash_data + slot.key_length + slot.value_length, &slot.version_number, sizeof(uint32_t));
 
-    uint32_t payload_hash = super_fast_hash(hash_data, (int) (slot.key_length + slot.value_length +
-                                                              sizeof(((header_slot_t *) 0)->version_number)));
-    free(hash_data);
+    uint32_t payload_hash = super_fast_hash(hash_data, (int)(slot.key_length + slot.value_length + sizeof(uint32_t)));
 
     if (payload_hash != slot.payload_hash) {
-        // Torn read
-        request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
-        free(data);
+        request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
+        free(combined_buffer);
         return;
     }
 
@@ -188,6 +186,7 @@ int request_region_poller(void *arg) {
 
     //Enter main loop
     while (1) {
+        PROFILE_START("server_main_firstlooppart");
         if (request_region->status == REQUEST_REGION_INACTIVE) {
             thrd_yield();
             continue;
@@ -240,7 +239,9 @@ int request_region_poller(void *arg) {
 
             connected_to_client = true;
         }
+        PROFILE_END("server_main_firstlooppart");
 
+        PROFILE_START("server_main_secondlooppart");
         /* It might seem like this will have a lot of overhead to constantly poll on every slot, it might add a little
          * bit of overhead when just waiting for a single put, but when experiencing constant writing, it will implicitly
          * sync up, as when we hit a slot that we actually need to do something with, the next in the loop will be ready
@@ -249,6 +250,7 @@ int request_region_poller(void *arg) {
         for (uint32_t current_head_slot = 0; current_head_slot < MAX_REQUEST_SLOTS; current_head_slot++) {
             header_slot_t slot = request_region->header_slots[current_head_slot];
             if (slot.status == HEADER_SLOT_UNUSED) continue;
+            PROFILE_START("server_main_actloop");
 
             char *data_slot_start = ((char *) request_region) + sizeof(request_region_t);
 
@@ -299,8 +301,11 @@ int request_region_poller(void *arg) {
                     fprintf(stderr, "Illegal state in request region thread\n");
                     exit(EXIT_FAILURE);
             }
+            PROFILE_END("server_main_actloop");
             free(key);
         }
+        PROFILE_END("server_main_secondlooppart");
+        print_profile_report(stdout);
     }
 
     free(queue);
@@ -309,62 +314,73 @@ int request_region_poller(void *arg) {
 
 static void send_put_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
                          sci_sequence_t ack_sequence, uint32_t version_number, enum replica_ack_type ack_type) {
+    PROFILE_START("send_put_ack");
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
     replica_ack_instance->version_number = version_number;
     replica_ack_instance->index_entry_written = -1;
     SCIStoreBarrier(ack_sequence, NO_FLAGS);
     replica_ack_instance->replica_ack_type = ack_type;
     SCIFlush(ack_sequence, NO_FLAGS); //TODO: is this needed?
+    PROFILE_END("send_put_ack");
 }
 
 static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
                                 uint32_t key_hash, char *index_region, sci_sequence_t ack_sequence, bool write_back,
                                 size_t write_back_offset, char *data_region) {
+    PROFILE_START("send_get_ack_phase1");
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
+    index_entry_t *bucket_base = (index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, 0);
 
-    // Fast code is ugly
-    uint32_t i;
-    if (write_back) {
-        for (i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
-            volatile index_entry_t *entry = &replica_ack_instance->bucket[i];
-            *entry = *((index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, i));
-            uint32_t transfer_length = entry->key_length + entry->data_length + sizeof(uint32_t);
+    if (!write_back) {
+        // Fast path - just copy
+        replica_ack_instance->bucket[0] = bucket_base[0];
+        replica_ack_instance->bucket[1] = bucket_base[1];
+        replica_ack_instance->bucket[2] = bucket_base[2];
+        replica_ack_instance->bucket[3] = bucket_base[3];
+    } else {
+        // Keep local copies to avoid volatile read-after-write
+        replica_ack_instance->index_entry_written = -1;
 
-            if (entry->hash == key_hash &&
-                transfer_length <= SPECULATIVE_SIZE) {
+        for (uint32_t i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
+            index_entry_t local_entry = bucket_base[i];
+            replica_ack_instance->bucket[i] = local_entry;
 
-                char *data_pointer = data_region + entry->offset;
+            // Now use local_entry instead of reading from volatile memory
+            uint32_t transfer_length = local_entry.key_length + local_entry.data_length + sizeof(uint32_t);
+
+            if (local_entry.hash == key_hash &&
+                transfer_length <= SPECULATIVE_SIZE &&
+                replica_ack_instance->index_entry_written == -1) {
+
+                char *data_pointer = data_region + local_entry.offset;
                 volatile char *dest = ((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + write_back_offset;
 
-                for (uint32_t j = 0; j < transfer_length; j++) {
-                    dest[j] = data_pointer[j];
-                }
-
-                replica_ack_instance->index_entry_written = (int) i;
-
-                goto found; // Only write back the first matching entry
+                memcpy((void*)dest, data_pointer, transfer_length);
+                replica_ack_instance->index_entry_written = i;
+                break;  // Early exit
             }
-        }
-    } else {
-        for (i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
-            replica_ack_instance->bucket[i] = *((index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, i));
-            found:
-            continue;
         }
     }
 
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
     check_for_errors(ack_sequence);
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
+    PROFILE_END("send_get_ack_phase1");
 }
 
-static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot, const char *data_pointer, uint32_t transfer_length, size_t return_offset, sci_sequence_t ack_sequence) {
+static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
+                                const char *data_pointer, uint32_t transfer_length, size_t return_offset,
+                                sci_sequence_t ack_sequence) {
+    PROFILE_START("send_get_ack_phase2");
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT);
-    for (uint32_t i = 0; i < transfer_length; i++) {
-        *(((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + return_offset + i) = *(data_pointer + i);
-    }
+
+    // Replace byte-by-byte copy with memcpy
+    volatile char *dest = ((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + return_offset;
+    memcpy((void*)dest, data_pointer, transfer_length);
+
     replica_ack_instance->index_entry_written = -1;
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
     check_for_errors(ack_sequence);
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
+    PROFILE_END("send_get_ack_phase2");
 }

@@ -14,6 +14,7 @@
 #define REPLICA_INDEX_SEGMENT_ID(index) (100 + index)
 #define REPLICA_DATA_SEGMENT_ID(index) (200 + index)
 #define SPECULATIVE_SIZE 256
+#define WRITE_BACK_REPLICA 0
 
 
 #define DATA_REGION_SIZE 0x1000000

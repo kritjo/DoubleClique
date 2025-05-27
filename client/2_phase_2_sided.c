@@ -10,8 +10,6 @@
 #include "phase_2_queue.h"
 #include "sequence.h"
 
-#define WRITE_BACK_REPLICA 0
-
 static void *phase2_thread(__attribute__((unused)) void *_args);
 
 void init_2_phase_2_sided_get(void) {

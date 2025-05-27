@@ -16,6 +16,7 @@ add_library(commonLib STATIC
         dma_utils.h
         sequence.c
         sequence.h
+        profiling.h
 )
 
 target_include_directories(commonLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
