@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 199309L
 #include "main.h"
 
 #include <stdlib.h>
@@ -55,7 +56,7 @@ static void do_experiment_zipf(request_promise_t *(promise_func)(const char *key
         errors[promises[i]->result]++;
         free(promises[i]);
     }
-    printf("%s with %d zipf samples took %ld ns\n", experiment_name, NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec));
+    printf("%s with %d zipf samples took %ld ns. %ld ns/sample\n", experiment_name, NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec), (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
     for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
         printf("    Status %d: %d\n", i, errors[i]);
     }
@@ -82,7 +83,7 @@ static void do_experiment_uniform(request_promise_t *(promise_func)(unsigned cha
         errors[promises[i]->result]++;
         free(promises[i]);
     }
-    printf("%s with %d uniform samples took %ld ns\n", experiment_name, NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec));
+    printf("%s with %d uniform samples took %ld ns. %ld ns/sample\n", experiment_name, NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec), (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
     for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
         printf("    Status %d: %d\n", i, errors[i]);
     }
@@ -159,9 +160,7 @@ int main(int argc, char *argv[]) {
 
     printf("Loaded table with %d keys\n", NUM_KEYS);
 
-
     request_promise_t *promises[NUM_SAMPLES];
-    uint32_t errors[REQUEST_PROMISE_STATUS_COUNT] = {0};
 
     printf("warming up\n");
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
