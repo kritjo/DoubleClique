@@ -332,10 +332,9 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
 
     if (!write_back) {
         // Fast path - just copy
-        replica_ack_instance->bucket[0] = bucket_base[0];
-        replica_ack_instance->bucket[1] = bucket_base[1];
-        replica_ack_instance->bucket[2] = bucket_base[2];
-        replica_ack_instance->bucket[3] = bucket_base[3];
+        for (uint32_t i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
+            replica_ack_instance->bucket[i] = *((index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, i));
+        }
     } else {
         // Keep local copies to avoid volatile read-after-write
         replica_ack_instance->index_entry_written = -1;
