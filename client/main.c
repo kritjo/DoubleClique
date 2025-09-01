@@ -90,9 +90,11 @@ static void do_experiment_uniform(request_promise_t *(promise_func)(unsigned cha
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < REPLICA_COUNT + 1) {
+    if (argc != REPLICA_COUNT + 1) {
         fprintf(stderr, "Usage: %s replica_id[0] ... replica_id[n]\n", argv[0]);
+        exit(EXIT_FAILURE);
     }
+    
     SEOE(SCIInitialize, NO_FLAGS);
     SEOE(SCIOpen, &sd, NO_FLAGS);
 
