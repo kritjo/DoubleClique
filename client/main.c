@@ -31,6 +31,62 @@ static request_promise_t *do_random_zipf_action(const char *key, unsigned char *
 static request_promise_t *do_random_action(unsigned char *data, uint32_t value_len, double chance_for_get, bool get_2_sided);
 
 static char *keys[NUM_KEYS];
+static int key_for_sample[NUM_SAMPLES] = {0};
+static unsigned char sample_data[VALUE_LEN];
+
+static void do_experiment_zipf(request_promise_t *(promise_func)(const char *key, unsigned char *data, uint32_t value_len, double chance_for_get, bool get_2_sided), double chance_for_get, bool get_2_sided, const char *experiment_name) {
+    request_promise_t *promises[NUM_SAMPLES];
+    uint32_t errors[REQUEST_PROMISE_STATUS_COUNT] = {0};
+    struct timespec start, end;
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
+        promises[i] = promise_func(keys[key_for_sample[i]], sample_data, VALUE_LEN, chance_for_get, get_2_sided);
+    }
+    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
+        while(promises[i]->result == PROMISE_PENDING);
+        if (promises[i]->result == PROMISE_SUCCESS) {
+            if (promises[i]->operation == OP_GET) {
+                free(promises[i]->data);
+            }
+        }
+        errors[promises[i]->result]++;
+        free(promises[i]);
+    }
+    printf("%s with %d zipf samples took %ld ns\n", experiment_name, NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec));
+    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
+        printf("    Status %d: %d\n", i, errors[i]);
+    }
+}
+
+static void do_experiment_uniform(request_promise_t *(promise_func)(unsigned char *data, uint32_t value_len, double chance_for_get, bool get_2_sided), double chance_for_get, bool get_2_sided, const char *experiment_name) {
+    request_promise_t *promises[NUM_SAMPLES];
+    uint32_t errors[REQUEST_PROMISE_STATUS_COUNT] = {0};
+    struct timespec start, end;
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
+        promises[i] = promise_func(sample_data, VALUE_LEN, chance_for_get, get_2_sided);
+    }
+    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
+        while(promises[i]->result == PROMISE_PENDING);
+        if (promises[i]->result == PROMISE_SUCCESS) {
+            if (promises[i]->operation == OP_GET) {
+                free(promises[i]->data);
+            }
+        }
+        errors[promises[i]->result]++;
+        free(promises[i]);
+    }
+    printf("%s with %d uniform samples took %ld ns\n", experiment_name, NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec));
+    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
+        printf("    Status %d: %d\n", i, errors[i]);
+    }
+}
 
 int main(int argc, char *argv[]) {
     if (argc < REPLICA_COUNT + 1) {
@@ -65,9 +121,7 @@ int main(int argc, char *argv[]) {
     init_2_phase_2_sided_get();
 
     request_promise_t *promise;
-    struct timespec start, end;
 
-    unsigned char sample_data[VALUE_LEN];
 
     for (unsigned char i = 0; i < VALUE_LEN; i++) {
         sample_data[i] = i;
@@ -99,7 +153,6 @@ int main(int argc, char *argv[]) {
     }
     zipf_cdf(cdf);
 
-    int key_for_sample[NUM_SAMPLES] = {0};
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
         key_for_sample[i] = zipf_sample(cdf);
     }
@@ -126,121 +179,22 @@ int main(int argc, char *argv[]) {
     printf("warmed up\n");
 
     // Do 90-10 get-put
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_zipf_action(keys[key_for_sample[i]], sample_data, VALUE_LEN, 0.9, true);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) {
-                free(promises[i]->data);
-            }
-        } else {
-            errors[promises[i]->result]++;
-        }
-        free(promises[i]);
-    }
-    printf("90-10 GET-PUT with %d zipf samples took %ld ns\n", NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec));
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
+    do_experiment_zipf(do_random_zipf_action, 0.9, true, "90-10 GET-PUT");
 
     // Do 90-10 get-put
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_zipf_action(keys[key_for_sample[i]], sample_data, VALUE_LEN, 0.5, true);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    memset(errors, 0, REQUEST_PROMISE_STATUS_COUNT * sizeof(uint32_t));
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) {
-                free(promises[i]->data);
-            }
-        } else {
-            errors[promises[i]->result]++;
-        }
-        free(promises[i]);
-    }
-    printf("50-50 GET-PUT with %d zipf samples took %ld ns\n", NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec));
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
+    do_experiment_zipf(do_random_zipf_action, 0.5, true, "50-50 GET-PUT");
 
     // Do 90-10 get-put
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_zipf_action(keys[key_for_sample[i]], sample_data, VALUE_LEN, 0.1, true);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    memset(errors, 0, REQUEST_PROMISE_STATUS_COUNT * sizeof(uint32_t));
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) free(promises[i]->data);
-        } else {
-            errors[promises[i]->result]++;
-        }
-        free(promises[i]);
-    }
-    printf("10-90 GET-PUT with %d zipf samples took %ld ns\n", NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec));
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
+    do_experiment_zipf(do_random_zipf_action, 0.1, true, "10-90 GET-PUT");
 
     // put
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_zipf_action(keys[key_for_sample[i]], sample_data, VALUE_LEN, 0, true);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    memset(errors, 0, REQUEST_PROMISE_STATUS_COUNT * sizeof(uint32_t));
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) {
-                free(promises[i]->data);
-            }
-        } else {
-            errors[promises[i]->result]++;
-        }
-        free(promises[i]);
-    }
-    printf("PUT took %ld ns pr with zipf\n", (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
+    do_experiment_zipf(do_random_zipf_action, 0, true, "PUT");
 
     // 2 sided get
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_zipf_action(keys[key_for_sample[i]], sample_data, VALUE_LEN, 1, true);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    memset(errors, 0, REQUEST_PROMISE_STATUS_COUNT * sizeof(uint32_t));
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) {
-                free(promises[i]->data);
-            }
-        } else {
-            errors[promises[i]->result]++;
-        }
-        free(promises[i]);
-    }
-    printf("2 sided GET took %ld ns pr with zipf\n", (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
+    do_experiment_zipf(do_random_zipf_action, 1, true, "2 Sided GET");
+
+    // 1 sided get
+    do_experiment_zipf(do_random_zipf_action, 1, false, "1 Sided GET");
 
 #if DO_NON_BATCH
     // 2 sided get - non batch
@@ -258,9 +212,8 @@ int main(int argc, char *argv[]) {
             if (promises[i]->operation == OP_GET) {
                 free(promises[i]->data);
             }
-        } else {
-            errors[promises[i]->result]++;
         }
+        errors[promises[i]->result]++;
         free(promises[i]);
     }
     printf("2 sided GET - non batched - took %ld ns pr with zipf\n", (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
@@ -269,147 +222,24 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
-    // 1 sided get
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_zipf_action(keys[key_for_sample[i]], sample_data, VALUE_LEN, 1, false);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    memset(errors, 0, REQUEST_PROMISE_STATUS_COUNT * sizeof(uint32_t));
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) {
-                free(promises[i]->data);
-            }
-        } else {
-            errors[promises[i]->result]++;
-        }
-        free(promises[i]);
-    }
-    printf("1 sided GET took %ld ns pr with zipf\n", (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
-
     // Uniform time
     // Do 90-10 get-put
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_action(sample_data, VALUE_LEN, 0.9, true);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) {
-                free(promises[i]->data);
-            }
-        } else {
-            errors[promises[i]->result]++;
-        }
-        free(promises[i]);
-    }
-    printf("90-10 GET-PUT with %d uniform samples took %ld ns\n", NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec));
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
+    do_experiment_zipf(do_random_zipf_action, 0.9, true, "90-10 GET-PUT");
 
     // Do 90-10 get-put
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_action(sample_data, VALUE_LEN, 0.5, true);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    memset(errors, 0, REQUEST_PROMISE_STATUS_COUNT * sizeof(uint32_t));
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) {
-                free(promises[i]->data);
-            }
-        } else {
-            errors[promises[i]->result]++;
-        }
-        free(promises[i]);
-    }
-    printf("50-50 GET-PUT with %d uniform samples took %ld ns\n", NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec));
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
+    do_experiment_zipf(do_random_zipf_action, 0.5, true, "50-50 GET-PUT");
 
     // Do 90-10 get-put
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_action(sample_data, VALUE_LEN, 0.1, true);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    memset(errors, 0, REQUEST_PROMISE_STATUS_COUNT * sizeof(uint32_t));
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) free(promises[i]->data);
-        } else {
-            errors[promises[i]->result]++;
-        }
-        free(promises[i]);
-    }
-    printf("10-90 GET-PUT with %d uniform samples took %ld ns\n", NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec));
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
+    do_experiment_zipf(do_random_zipf_action, 0.1, true, "10-90 GET-PUT");
 
     // put
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_action(sample_data, VALUE_LEN, 0, true);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    memset(errors, 0, REQUEST_PROMISE_STATUS_COUNT * sizeof(uint32_t));
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) {
-                free(promises[i]->data);
-            }
-        } else {
-            errors[promises[i]->result]++;
-        }
-        free(promises[i]);
-    }
-    printf("PUT took %ld ns pr without zipf\n", (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
+    do_experiment_zipf(do_random_zipf_action, 0, true, "PUT");
 
     // 2 sided get
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_action(sample_data, VALUE_LEN, 1, true);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    memset(errors, 0, REQUEST_PROMISE_STATUS_COUNT * sizeof(uint32_t));
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) {
-                free(promises[i]->data);
-            }
-        } else {
-            errors[promises[i]->result]++;
-        }
-        free(promises[i]);
-    }
-    printf("2 sided GET took %ld ns pr without zipf\n", (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
+    do_experiment_zipf(do_random_zipf_action, 1, true, "2 Sided GET");
+
+    // 1 sided get
+    do_experiment_zipf(do_random_zipf_action, 1, false, "1 Sided GET");
 
 #if DO_NON_BATCH
     // 2 sided get - non batch
@@ -427,9 +257,8 @@ int main(int argc, char *argv[]) {
             if (promises[i]->operation == OP_GET) {
                 free(promises[i]->data);
             }
-        } else {
-            errors[promises[i]->result]++;
         }
+        errors[promises[i]->result]++;
         free(promises[i]);
     }
     printf("2 sided GET - non batched - took %ld ns pr without zipf\n", (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
@@ -437,30 +266,6 @@ int main(int argc, char *argv[]) {
         printf("    Status %d: %d\n", i, errors[i]);
     }
 #endif
-
-    // 1 sided get
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_action(sample_data, VALUE_LEN, 1, false);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    memset(errors, 0, REQUEST_PROMISE_STATUS_COUNT * sizeof(uint32_t));
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) {
-                free(promises[i]->data);
-            }
-        } else {
-            errors[promises[i]->result]++;
-        }
-        free(promises[i]);
-    }
-    printf("1 sided GET took %ld ns pr without zipf\n", (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
 
     printf("Completed!\n");
 
