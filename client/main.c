@@ -223,22 +223,22 @@ int main(int argc, char *argv[]) {
 
     // Uniform time
     // Do 90-10 get-put
-    do_experiment_zipf(do_random_zipf_action, 0.9, true, "90-10 GET-PUT");
+    do_experiment_uniform(do_random_action, 0.9, true, "90-10 GET-PUT");
 
     // Do 90-10 get-put
-    do_experiment_zipf(do_random_zipf_action, 0.5, true, "50-50 GET-PUT");
+    do_experiment_uniform(do_random_action, 0.5, true, "50-50 GET-PUT");
 
     // Do 90-10 get-put
-    do_experiment_zipf(do_random_zipf_action, 0.1, true, "10-90 GET-PUT");
+    do_experiment_uniform(do_random_action, 0.1, true, "10-90 GET-PUT");
 
     // put
-    do_experiment_zipf(do_random_zipf_action, 0, true, "PUT");
+    do_experiment_uniform(do_random_action, 0, true, "PUT");
 
     // 2 sided get
-    do_experiment_zipf(do_random_zipf_action, 1, true, "2 Sided GET");
+    do_experiment_uniform(do_random_action, 1, true, "2 Sided GET");
 
     // 1 sided get
-    do_experiment_zipf(do_random_zipf_action, 1, false, "1 Sided GET");
+    do_experiment_uniform(do_random_action, 1, false, "1 Sided GET");
 
 #if DO_NON_BATCH
     // 2 sided get - non batch
