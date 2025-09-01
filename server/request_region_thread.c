@@ -317,7 +317,9 @@ static void send_put_ack(uint8_t replica_index, volatile replica_ack_t *replica_
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
     replica_ack_instance->version_number = version_number;
     replica_ack_instance->index_entry_written = -1;
+#if BARRIERED_ACKS
     SCIStoreBarrier(ack_sequence, NO_FLAGS);
+#endif
     replica_ack_instance->replica_ack_type = ack_type;
     SCIFlush(ack_sequence, NO_FLAGS); //TODO: is this needed?
     PROFILE_END("send_put_ack");
@@ -361,7 +363,9 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
     }
 
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
+#if BARRIERED_ACKS
     check_for_errors(ack_sequence);
+#endif
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
     PROFILE_END("send_get_ack_phase1");
 }
@@ -378,7 +382,9 @@ static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_point
 
     replica_ack_instance->index_entry_written = -1;
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
+#if BARRIERED_ACKS
     check_for_errors(ack_sequence);
+#endif
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
     PROFILE_END("send_get_ack_phase2");
 }
