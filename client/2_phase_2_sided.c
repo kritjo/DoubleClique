@@ -201,6 +201,8 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                             exit(EXIT_FAILURE);
                         }
 
+                        //TODO: Full key verification?
+
                         memcpy(ack_slot->promise->data, ack_data + key_len, value_len);
                         ack_slot->promise->result = PROMISE_SUCCESS;
                         get_2_sided_decrement();
@@ -275,6 +277,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
 
     uint32_t hash = super_fast_hash(ack_data, (int) (ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)));
     if (hash != expected_hash) {
+        //TODO: This seems like a bug, as we could have shipped multiple phase2 requests.
         ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
         return true;
     }
@@ -285,6 +288,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
         exit(EXIT_FAILURE);
     }
 
+    //TODO: No full key verification?
     memcpy(ack_slot->promise->data, ack_data + ack_slot->key_len, ack_slot->value_len);
     ack_slot->promise->result = PROMISE_SUCCESS;
     return true;
