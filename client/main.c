@@ -98,6 +98,8 @@ int main(int argc, char *argv[]) {
     SEOE(SCIInitialize, NO_FLAGS);
     SEOE(SCIOpen, &sd, NO_FLAGS);
 
+    SetSciMemCopyFunction(4);
+
     // TODO: reset state if client reconnects
     init_put();
 
