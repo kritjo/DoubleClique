@@ -53,8 +53,7 @@ uint32_t super_fast_hash(const char *data, uint32_t len) {
             hash += hash >> 1;
             break;
         default:
-            fprintf(stderr, "Illegal state in super_fast_hash\n");
-            return 0;
+            break;
     }
 
     /* Force "avalanching" of final 127 bits */
