@@ -65,7 +65,7 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
     memcpy(hash_data + key_len + value_len, &ack_slot->version_number, sizeof(((header_slot_t *) 0)->version_number));
 
     uint32_t payload_hash = super_fast_hash(hash_data,
-                                            (int) (key_len + value_len + sizeof(((header_slot_t *) 0)->version_number)));
+                                            (uint32_t) (key_len + value_len + sizeof(((header_slot_t *) 0)->version_number)));
     free(hash_data);
 
     ack_slot->header_slot_WRITE_ONLY->payload_hash = payload_hash;

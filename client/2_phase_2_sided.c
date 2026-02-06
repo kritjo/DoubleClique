@@ -102,7 +102,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
             replica_ack_t *replica_ack_instance = ack_slot->replica_ack_instances[replica_index];
 
             // For every replica, we need to check all of their returned index entries
-            for (uint32_t slot_index = 0; slot_index < INDEX_SLOTS_PR_BUCKET; slot_index++) {
+            for (int slot_index = 0; slot_index < INDEX_SLOTS_PR_BUCKET; slot_index++) {
                 index_entry_t slot = replica_ack_instance->bucket[slot_index];
 
                 if (slot.status != 1) continue;
@@ -193,7 +193,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                     uint32_t expected_hash = *((uint32_t *) (ack_data + key_len + value_len));
                     *((uint32_t *) (ack_data + key_len + value_len)) = found_candidates[candidate_index].version_number;
 
-                    uint32_t hash = super_fast_hash(ack_data, (int) (key_len + value_len + sizeof(uint32_t)));
+                    uint32_t hash = super_fast_hash(ack_data, (uint32_t) (key_len + value_len + sizeof(uint32_t)));
                     if (hash == expected_hash) {
                         ack_slot->promise->data = malloc(value_len);
                         if (ack_slot->promise->data == NULL) {
@@ -275,7 +275,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     uint32_t expected_hash = *((uint32_t *) (ack_data + ack_slot->key_len + ack_slot->value_len));
     *((uint32_t *) (ack_data + ack_slot->key_len + ack_slot->value_len)) = ack_slot->version_number;
 
-    uint32_t hash = super_fast_hash(ack_data, (int) (ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)));
+    uint32_t hash = super_fast_hash(ack_data, (uint32_t) (ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)));
     if (hash != expected_hash) {
         //TODO: This seems like a bug, as we could have shipped multiple phase2 requests.
         ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
@@ -319,4 +319,6 @@ static void *phase2_thread(__attribute__((unused)) void *_args) {
                 queue_item.server_data_offset,
                 queue_item.promise);
     }
+
+    return NULL;
 }

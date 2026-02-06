@@ -35,6 +35,14 @@ static size_t completed_index_fetch_replica_index_order[REPLICA_COUNT];
 static stored_index_data_t stored_index_data[REPLICA_COUNT];
 static get_data_response_args_t preferred_data_fetch_args;
 
+static sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__((unused)) sci_dma_queue_t queue, sci_error_t status);
+static sci_callback_action_t preferred_data_fetch_completed_callback(void IN *arg,
+                                                                     __attribute__((unused)) sci_dma_queue_t queue, sci_error_t status);
+static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_tried_vnr_count, const char *key,
+                                      uint32_t key_hash, uint32_t key_length);
+static sci_callback_action_t contingency_data_fetch_completed_callback(void IN *arg,
+                                                                       __attribute__((unused)) sci_dma_queue_t queue, sci_error_t status);
+
 // Only allow a single get at a time, the thing is that we want to use the DMA Callbacks, which means that we can not
 // simultaneously use the wait for dma queue function. If we did not use the callbacks but rather the wait for function
 // we could still not have any more stuff in flight, so I don't think that we are loosing anything in doing it this way.
@@ -181,7 +189,7 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
     pthread_t thread_ids[REPLICA_COUNT];
 
     // First we need to get the hash of the key
-    uint32_t key_hash = super_fast_hash(key, key_len);
+    uint32_t key_hash = super_fast_hash(key, (uint32_t) key_len);
 
     // Now we need to read index buckets from the replicas this should be done asynchronously preferably, so that
     // we can get the data slot from the one that answers first
@@ -480,7 +488,7 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
         uint32_t expected_payload_hash = *((uint32_t *) (data_slot + args->key_len + data_length));
         *((uint32_t *) (data_slot + args->key_len + data_length)) = (uint32_t) version_number;
 
-        uint32_t payload_hash = super_fast_hash(data_slot, (int) (args->key_len + data_length +
+        uint32_t payload_hash = super_fast_hash(data_slot, (uint32_t) (args->key_len + data_length +
                                                                   sizeof(((header_slot_t *) 0)->version_number)));
 
         if (payload_hash != expected_payload_hash) {
@@ -706,7 +714,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         uint32_t expected_payload_hash = *((uint32_t *) (slot + args->index_entry.key_length + data_length));
         *((uint32_t *) (slot + args->index_entry.key_length + data_length)) = (uint32_t) args->index_entry.version_number;
 
-        uint32_t payload_hash = super_fast_hash(slot, (int) (args->index_entry.key_length + data_length +
+        uint32_t payload_hash = super_fast_hash(slot, (uint32_t) (args->index_entry.key_length + data_length +
                                                                   sizeof(((header_slot_t *) 0)->version_number)));
 
         if (payload_hash != expected_payload_hash) {

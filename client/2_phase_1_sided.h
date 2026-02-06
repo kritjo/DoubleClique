@@ -70,14 +70,6 @@ typedef struct {
 void init_2_phase_1_sided_get(sci_desc_t sd, uint8_t *replica_node_ids, bool use_dma_);
 request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len);
 
-static sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__((unused)) sci_dma_queue_t queue, sci_error_t status);
-static sci_callback_action_t preferred_data_fetch_completed_callback(void IN *arg,
-                                                                     __attribute__((unused)) sci_dma_queue_t queue, sci_error_t status);
-static void contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_tried_vnr_count, const char *key,
-                                      uint32_t key_hash, uint32_t key_length);
-static sci_callback_action_t contingency_data_fetch_completed_callback(void IN *arg,
-                                                                       __attribute__((unused)) sci_dma_queue_t queue, sci_error_t status);
-
 #define NO_ERROR_MSG ""
 #define NO_INDEX_ENTRIES_MSG "Found no entries in table that match key"
 #define NO_DATA_MATCH_MSG "None of the keys with the correct hash has a key that match"

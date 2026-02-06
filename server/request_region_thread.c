@@ -61,7 +61,7 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
 
     memcpy(hash_data + slot.key_length + slot.value_length, &slot.version_number, sizeof(uint32_t));
 
-    uint32_t payload_hash = super_fast_hash(hash_data, (int)(slot.key_length + slot.value_length + sizeof(uint32_t)));
+    uint32_t payload_hash = super_fast_hash(hash_data, (uint32_t) (slot.key_length + slot.value_length + sizeof(uint32_t)));
 
     if (payload_hash != slot.payload_hash) {
         request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
@@ -117,11 +117,16 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
             queue_item_t queue_item;
             queue_item.buddy_allocated_addr = old_data_slot;
             clock_gettime(CLOCK_MONOTONIC, &queue_item.t);
-            queue_item.t.tv_nsec += NS_TO_COLLECTION;
-            if (queue_item.t.tv_nsec >= 1000000000L) {
-                queue_item.t.tv_nsec += queue_item.t.tv_nsec / 1000000000L;
-                queue_item.t.tv_nsec %= 1000000000L;
+            long long nsec =
+                (long long)queue_item.t.tv_nsec + NS_TO_COLLECTION;
+
+            if (nsec >= 1000000000LL) {
+                nsec -= 1000000000LL;
+                queue_item.t.tv_sec++;
             }
+
+            queue_item.t.tv_nsec = (long)nsec;
+
             enqueue(queue, queue_item);
         }
     }
@@ -341,7 +346,7 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
         // Keep local copies to avoid volatile read-after-write
         replica_ack_instance->index_entry_written = -1;
 
-        for (uint32_t i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
+        for (int i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
             index_entry_t local_entry = bucket_base[i];
             replica_ack_instance->bucket[i] = local_entry;
 
@@ -355,6 +360,7 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
                 char *data_pointer = data_region + local_entry.offset;
                 volatile char *dest = ((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + write_back_offset;
 
+                // TODO: SCIMEMCPY
                 memcpy((void*)dest, data_pointer, transfer_length);
                 replica_ack_instance->index_entry_written = i;
                 break;  // Early exit
@@ -376,7 +382,6 @@ static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_point
     PROFILE_START("send_get_ack_phase2");
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT);
 
-    // Replace byte-by-byte copy with memcpy
     volatile char *dest = ((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + return_offset;
     memcpy((void*)dest, data_pointer, transfer_length);
 

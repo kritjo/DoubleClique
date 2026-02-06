@@ -7,6 +7,7 @@
  */
 
 #include <stdint.h>
+#include <stdio.h>
 #undef get16bits
 #if (defined(__GNUC__) && defined(__i386__)) || defined(__WATCOMC__) \
   || defined(_MSC_VER) || defined (__BORLANDC__) || defined (__TURBOC__)
@@ -18,7 +19,7 @@
                        +(uint32_t)(((const uint8_t *)(d))[0]) )
 #endif
 
-uint32_t super_fast_hash(const char *data, int len) {
+uint32_t super_fast_hash(const char *data, uint32_t len) {
     uint32_t hash = len, tmp;
     int rem;
 
@@ -40,16 +41,20 @@ uint32_t super_fast_hash(const char *data, int len) {
     switch (rem) {
         case 3: hash += get16bits (data);
             hash ^= hash << 16;
-            hash ^= ((signed char)data[sizeof (uint16_t)]) << 18;
+            hash ^= ((uint32_t)data[sizeof (uint16_t)]) << 18;
             hash += hash >> 11;
             break;
         case 2: hash += get16bits (data);
             hash ^= hash << 11;
             hash += hash >> 17;
             break;
-        case 1: hash += (signed char)*data;
+        case 1: hash += (uint32_t)(unsigned char)*data;
             hash ^= hash << 10;
             hash += hash >> 1;
+            break;
+        default:
+            fprintf(stderr, "Illegal state in super_fast_hash\n");
+            return 0;
     }
 
     /* Force "avalanching" of final 127 bits */

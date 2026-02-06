@@ -3,6 +3,6 @@
 
 #include <stdint.h>
 
-uint32_t super_fast_hash(const char * data, int len);
+uint32_t super_fast_hash(const char * data, uint32_t len);
 
 #endif //DOUBLECLIQUE_SUPER_FAST_HASH_H

@@ -5,7 +5,7 @@
 
 #include "sisci_glob_defs.h"
 
-void create_plain_segment_and_set_available(sci_desc_t sd, sci_local_segment_t *segment, size_t size, int segment_id) {
+void create_plain_segment_and_set_available(sci_desc_t sd, sci_local_segment_t *segment, size_t size, unsigned int segment_id) {
     SEOE(SCICreateSegment,
          sd,
          segment,

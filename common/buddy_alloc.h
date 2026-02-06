@@ -398,8 +398,6 @@ static bool buddy_tree_can_shrink(struct buddy_tree *t);
  * Integration functions
  */
 
-/* Get a pointer to the parent buddy struct */
-static struct buddy* buddy_tree_buddy(struct buddy_tree* t);
 
 /*
  * Debug functions
@@ -1110,6 +1108,8 @@ enum buddy_safe_free_status buddy_safe_free(struct buddy* buddy, void* ptr, size
             return BUDDY_SAFE_FREE_INVALID_ADDRESS;
         case BUDDY_TREE_RELEASE_SUCCESS:
             break;
+        default:
+            return BUDDY_SAFE_FREE_INVALID_ADDRESS;
     }
 
     return BUDDY_SAFE_FREE_SUCCESS;
@@ -2126,10 +2126,6 @@ static bool buddy_tree_can_shrink(struct buddy_tree *t) {
     return true;
 }
 
-static struct buddy* buddy_tree_buddy(struct buddy_tree* t) {
-    return (struct buddy*)(((unsigned char*)t) - sizeof(struct buddy));
-}
-
 static void buddy_tree_debug(struct buddy_tree *t, struct buddy_tree_pos pos,
         size_t start_size) {
     struct buddy_tree_walk_state state = buddy_tree_walk_state_root();
@@ -2349,7 +2345,7 @@ static void bitset_shift_left(unsigned char *bitset, size_t from_pos, size_t to_
 }
 
 static void bitset_shift_right(unsigned char *bitset, size_t from_pos, size_t to_pos, size_t by) {
-    ssize_t length = (ssize_t) to_pos - (ssize_t) from_pos;
+    ssize_t length = (ssize_t) (to_pos - from_pos);
     while (length >= 0) {
         size_t at = from_pos + (size_t) length;
         if (bitset_test(bitset, at)) {

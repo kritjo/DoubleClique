@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define ENABLE_PROFILING
 #ifdef ENABLE_PROFILING
 
 typedef struct {
@@ -59,11 +58,11 @@ static int timer_count = 0;
 // Print profiling report
 static void print_profile_report(FILE* fp) {
     fprintf(fp, "\n=== PROFILING REPORT ===\n");
-    fprintf(fp, "%-30s %15s %10s %15s\n", "Section", "Total (ns)", "Calls", "Avg (ns)");
+    fprintf(fp, "%-30s %15s %10s %15s\n", "Section", "Total (ms)", "Calls", "Avg (ms)");
     fprintf(fp, "%-30s %15s %10s %15s\n", "-------", "---------", "-----", "-------");
 
     for (int i = 0; i < timer_count; i++) {
-        double total_ms = timers[i].accumulated_ns;
+        double total_ms = (double)timers[i].accumulated_ns / 1e6;
         double avg_ms = total_ms / timers[i].call_count;
         fprintf(fp, "%-30s %15.3f %10d %15.3f\n",
                 timers[i].name, total_ms, timers[i].call_count, avg_ms);
