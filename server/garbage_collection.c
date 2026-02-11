@@ -1,4 +1,5 @@
 #include <malloc.h>
+#include <time.h>
 #include "garbage_collection.h"
 #include "garbage_collection_queue.h"
 #include "buddy_alloc.h"

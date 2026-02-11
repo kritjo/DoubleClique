@@ -26,6 +26,7 @@ add_compile_options(
     -Wlogical-op
 )
 add_compile_definitions(_REENTRANT)
+add_compile_definitions(_POSIX_C_SOURCE=200112L)
 
 set(WARNING_AS_ERROR 0)
 
