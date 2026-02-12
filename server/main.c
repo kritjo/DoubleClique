@@ -31,8 +31,6 @@ int main(int argc, char* argv[]) {
     SEOE(SCIInitialize, NO_FLAGS);
     SEOE(SCIOpen, &sd, NO_FLAGS);
 
-    SetSciMemCopyFunction(4);
-
     create_plain_segment_and_set_available(sd, &index_segment, INDEX_REGION_SIZE, REPLICA_INDEX_SEGMENT_ID(replica_id));
     create_plain_segment_and_set_available(sd, &data_segment, DATA_REGION_SIZE, REPLICA_DATA_SEGMENT_ID(replica_id));
 

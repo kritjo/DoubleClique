@@ -10,6 +10,7 @@
 #include "request_region.h"
 #include "sisci_glob_defs.h"
 #include "super_fast_hash.h"
+#include "avx_cpy.h"
 
 #include "index_data_protocol.h"
 
@@ -360,7 +361,7 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
                 volatile char *dest = ((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + write_back_offset;
 
                 // TODO: SCIMEMCPY
-                memcpy((void*)dest, data_pointer, transfer_length);
+                memcpy_nt_avx2(dest, data_pointer, transfer_length);
                 replica_ack_instance->index_entry_written = i;
                 break;  // Early exit
             }
@@ -368,7 +369,7 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
     }
 
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
-    _mm_sfence();    
+    _mm_sfence();
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
     PROFILE_END("send_get_ack_phase1");
 }
@@ -380,7 +381,7 @@ static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_point
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT);
 
     volatile char *dest = ((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + return_offset;
-    memcpy((void*)dest, data_pointer, transfer_length);
+    memcpy_nt_avx2(dest, data_pointer, transfer_length, CHUNK_SIZE);
 
     replica_ack_instance->index_entry_written = -1;
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
