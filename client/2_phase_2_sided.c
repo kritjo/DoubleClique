@@ -47,16 +47,17 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
 
     ack_slot->key_hash = key_hash;
 
-    ack_slot->header_slot_WRITE_ONLY->payload_hash = key_hash;
-    ack_slot->header_slot_WRITE_ONLY->offset = (size_t) starting_offset;
-    ack_slot->header_slot_WRITE_ONLY->key_length = key_len;
-    ack_slot->header_slot_WRITE_ONLY->value_length = 0;
-    ack_slot->header_slot_WRITE_ONLY->replica_write_back_hint = WRITE_BACK_REPLICA; // TODO: Use 'best' replica
-    ack_slot->header_slot_WRITE_ONLY->return_offset = ack_slot->starting_ack_data_offset;
-    ack_slot->header_slot_WRITE_ONLY->version_number = ack_slot->version_number;
-    check_for_errors(request_sequence);
-    ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_GET_PHASE1;
-
+    send_request_region_slot(ack_slot->header_slot_WRITE_ONLY,
+        key_len,
+        0,
+        ack_slot->version_number,
+        (size_t) starting_offset,
+        ack_slot->starting_ack_data_offset,
+        WRITE_BACK_REPLICA, // TODO: use 'best' replica
+        key_hash,
+        HEADER_SLOT_USED_GET_PHASE1
+    );
+    
     return ack_slot->promise;
 }
 
@@ -297,14 +298,17 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
 void send_phase_2_get(uint32_t version_number, uint32_t replica_index, uint8_t key_len, uint32_t value_len, ptrdiff_t server_data_offset, request_promise_t *promise) {
     ack_slot_t *ack_slot = get_ack_slot_blocking(GET_PHASE2, key_len, value_len, 0, key_len + value_len + sizeof(uint32_t), version_number, promise);
 
-    ack_slot->header_slot_WRITE_ONLY->offset = (size_t) server_data_offset;
-    ack_slot->header_slot_WRITE_ONLY->return_offset = ack_slot->starting_ack_data_offset;
-    ack_slot->header_slot_WRITE_ONLY->key_length = key_len;
-    ack_slot->header_slot_WRITE_ONLY->value_length = value_len;
-    ack_slot->header_slot_WRITE_ONLY->version_number = version_number;
-    ack_slot->header_slot_WRITE_ONLY->replica_write_back_hint = replica_index;
-    check_for_errors(request_sequence);
-    ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_GET_PHASE2;
+    send_request_region_slot(
+        ack_slot->header_slot_WRITE_ONLY,
+        key_len,
+        value_len,
+        version_number,
+        (size_t) server_data_offset,
+        ack_slot->starting_ack_data_offset,
+        replica_index,
+        0,
+        HEADER_SLOT_USED_GET_PHASE2
+    );
 }
 
 static void *phase2_thread(__attribute__((unused)) void *_args) {

@@ -3,9 +3,11 @@
 #include <sisci_types.h>
 #include <sisci_api.h>
 #include <stdlib.h>
+#include <stdalign.h>
 #include "sisci_glob_defs.h"
 #include "request_region.h"
 #include "get_node_id.h"
+#include "avx_cpy.h"
 
 volatile request_region_t *request_region;
 sci_sequence_t request_sequence;
@@ -73,4 +75,33 @@ void connect_to_request_region(sci_desc_t sd) {
     }
 
     request_region->status = PUT_REQUEST_REGION_ACTIVE;
+}
+
+void send_request_region_slot(
+    volatile header_slot_t *slot,
+    uint8_t key_length,
+    uint32_t value_length,
+    uint32_t version_number,
+    size_t offset,
+    size_t return_offset,
+    uint32_t replica_write_back_hint,
+    uint32_t payload_hash,
+    enum header_slot_status status
+) {
+    alignas(32) header_slot_t local_slot;
+    local_slot.key_length = key_length;
+    local_slot.value_length = value_length;
+    local_slot.version_number = version_number;
+    local_slot.offset = offset;
+    local_slot.return_offset = return_offset;
+    local_slot.replica_write_back_hint = replica_write_back_hint;
+    local_slot.payload_hash = payload_hash;
+
+    memcpy_nt_avx2(slot,
+        &local_slot,
+        sizeof(header_slot_t) - sizeof(enum header_slot_status),
+        CHUNK_SIZE);
+    
+    slot->status = status;
+    // TODO: potentially an sfence here
 }

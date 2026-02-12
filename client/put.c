@@ -68,13 +68,17 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
                                             (uint32_t) (key_len + value_len + sizeof(((header_slot_t *) 0)->version_number)));
     free(hash_data);
 
-    ack_slot->header_slot_WRITE_ONLY->payload_hash = payload_hash;
-    ack_slot->header_slot_WRITE_ONLY->offset = (size_t) starting_offset;
-    ack_slot->header_slot_WRITE_ONLY->key_length = key_len;
-    ack_slot->header_slot_WRITE_ONLY->value_length = value_len;
-    ack_slot->header_slot_WRITE_ONLY->version_number = ack_slot->version_number;
-    check_for_errors(request_sequence);
-    ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_USED_PUT;
+    send_request_region_slot(
+        ack_slot->header_slot_WRITE_ONLY,
+        key_len,
+        value_len,
+        ack_slot->version_number,
+        (size_t) starting_offset,
+        0,
+        0,
+        payload_hash,
+        HEADER_SLOT_USED_PUT
+    );
 
     return ack_slot->promise;
 }

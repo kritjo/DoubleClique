@@ -3,7 +3,7 @@ project(DoubleClique VERSION 0.0.1 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 17)
 
-set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
+set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG -march=native")
 set(CMAKE_BUILD_TYPE Release)
 
 add_compile_options(
