@@ -52,7 +52,7 @@ _memcpy_nt_avx2_helper(void *__restrict dst,
     }
 }
 
-void memcpy_nt_avx2(void *__restrict dst,
+void memcpy_nt_avx2(volatile void *__restrict dst,
                     const void *__restrict src,
                     size_t bytes,
                     unsigned int chunk)

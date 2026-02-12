@@ -11,7 +11,6 @@
 #define PIPE_SIZE 20000 //bytes
 #define MAX_REQUEST_SLOTS (PIPE_SIZE/MIN_SIZE_ELEMENT)
 #define REQUEST_SEGMENT_ID 1
-#define BARRIERED_ACKS 0 // Whether the server should use barriers for acknowledgments
 #define MAX_VERSION_NUMBER 0x1000000
 // The largest version number is 2**24 as the top 8 bits are used for the replica node id
 

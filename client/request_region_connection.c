@@ -84,7 +84,7 @@ void send_request_region_slot(
     uint32_t version_number,
     size_t offset,
     size_t return_offset,
-    uint32_t replica_write_back_hint,
+    uint8_t replica_write_back_hint,
     uint32_t payload_hash,
     enum header_slot_status status
 ) {
