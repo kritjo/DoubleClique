@@ -361,7 +361,7 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
                 volatile char *dest = ((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + write_back_offset;
 
                 // TODO: SCIMEMCPY
-                memcpy_nt_avx2(dest, data_pointer, transfer_length);
+                memcpy_nt_avx2(dest, data_pointer, transfer_length, CHUNK_SIZE);
                 replica_ack_instance->index_entry_written = i;
                 break;  // Early exit
             }
