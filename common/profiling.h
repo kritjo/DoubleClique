@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#define ENABLE_PROFILING
 #ifdef ENABLE_PROFILING
 
 typedef struct {

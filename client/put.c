@@ -32,10 +32,13 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
         exit(EXIT_FAILURE);
     }
 
+    PROFILE_START("put_blocking");
     uint32_t my_version_number = ((uint32_t) client_id) << 24 | version_number;
     version_number = (version_number + 1) % MAX_VERSION_NUMBER;
 
+    PROFILE_START("get_ack_slot");
     ack_slot_t *ack_slot = get_ack_slot_blocking(PUT, key_len, value_len, key_len+value_len, 0, my_version_number, NULL);
+    PROFILE_END("get_ack_slot");
 
     uint32_t starting_offset = ack_slot->starting_data_offset;
     uint32_t current_offset = starting_offset;
@@ -47,6 +50,7 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
         exit(EXIT_FAILURE);
     }
 
+    PROFILE_START("copying");
     // First copy the key
     for (uint32_t i = 0; i < key_len; i++) {
         hash_data[i] = key[i];
@@ -63,11 +67,15 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
 
     // Copy version number into the first 4 bytes of hash_data
     memcpy(hash_data + key_len + value_len, &ack_slot->version_number, sizeof(((header_slot_t *) 0)->version_number));
+    PROFILE_END("copying");
 
+    PROFILE_START("hash");
     uint32_t payload_hash = super_fast_hash(hash_data,
                                             (uint32_t) (key_len + value_len + sizeof(((header_slot_t *) 0)->version_number)));
+    PROFILE_END("hash");
     free(hash_data);
 
+    PROFILE_START("send_request_region");
     send_request_region_slot(
         ack_slot->header_slot_WRITE_ONLY,
         key_len,
@@ -79,7 +87,9 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
         payload_hash,
         HEADER_SLOT_USED_PUT
     );
+    PROFILE_END("send_request_region");
 
+    PROFILE_END("put_blocking");
     return ack_slot->promise;
 }
 
