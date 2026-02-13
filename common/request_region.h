@@ -8,8 +8,7 @@
 #include "sisci_glob_defs.h"
 #include "index_data_protocol.h"
 
-#define PIPE_SIZE 20000 //bytes
-#define MAX_REQUEST_SLOTS (PIPE_SIZE/MIN_SIZE_ELEMENT)
+#define REQUEST_SLOTS 50000
 #define REQUEST_SEGMENT_ID 1
 #define MAX_VERSION_NUMBER 0x1000000
 // The largest version number is 2**24 as the top 8 bits are used for the replica node id
@@ -54,14 +53,14 @@ typedef struct {
 
 typedef struct {
     uint8_t sisci_node_id; // Only valid when status != 0
-    header_slot_t header_slots[MAX_REQUEST_SLOTS];
+    header_slot_t header_slots[REQUEST_SLOTS];
     put_request_region_status_t status;
 } request_region_t;
 
-#define REQUEST_REGION_SIZE 0x200000
+#define REQUEST_REGION_SIZE 0x2000000
 #define REQUEST_REGION_DATA_SIZE (REQUEST_REGION_SIZE - sizeof(request_region_t))
-#define ACK_REGION_DATA_SIZE 0x200000
-#define ACK_REGION_SLOT_SIZE (MAX_REQUEST_SLOTS * sizeof(replica_ack_t) * REPLICA_COUNT)
+#define ACK_REGION_DATA_SIZE 0x2000000
+#define ACK_REGION_SLOT_SIZE (REQUEST_SLOTS * sizeof(replica_ack_t) * REPLICA_COUNT)
 #define ACK_REGION_SIZE (ACK_REGION_SLOT_SIZE + ACK_REGION_DATA_SIZE)
 #define ACK_SEGMENT_ID 2
 

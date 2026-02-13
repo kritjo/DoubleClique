@@ -51,7 +51,7 @@ typedef struct {
 } ack_slot_t;
 
 extern replica_ack_t *replica_ack;
-extern ack_slot_t ack_slots[MAX_REQUEST_SLOTS];
+extern ack_slot_t ack_slots[REQUEST_SLOTS];
 
 extern sci_local_segment_t ack_segment;
 extern sci_map_t ack_map;

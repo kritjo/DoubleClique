@@ -22,7 +22,7 @@ static uint32_t free_data_offset = 0;
 static uint32_t oldest_data_offset = 0;
 
 replica_ack_t *replica_ack;
-ack_slot_t ack_slots[MAX_REQUEST_SLOTS];
+ack_slot_t ack_slots[REQUEST_SLOTS];
 
 sci_local_segment_t ack_segment;
 sci_map_t ack_map;
@@ -86,7 +86,7 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
     ack_slot_t *ack_slot;
     while (!available_slot) {
         pthread_mutex_lock(&ack_mutex);
-        available_slot = (free_header_slot + 1) % MAX_REQUEST_SLOTS != oldest_header_slot;
+        available_slot = (free_header_slot + 1) % REQUEST_SLOTS != oldest_header_slot;
         if (available_slot) {
             ack_slot = &ack_slots[free_header_slot];
             ack_slot->header_slot_WRITE_ONLY = &request_region->header_slots[free_header_slot];
@@ -138,7 +138,7 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
             block_for_available_space(ack_data_length, &free_ack_offset, oldest_ack_offset, &ack_slot->starting_ack_data_offset, ACK_REGION_DATA_SIZE);
             ack_slot->ack_data_size = ack_data_length;
 
-            free_header_slot = (free_header_slot + 1) % MAX_REQUEST_SLOTS;
+            free_header_slot = (free_header_slot + 1) % REQUEST_SLOTS;
         }
         pthread_mutex_unlock(&ack_mutex);
     }
@@ -180,7 +180,7 @@ void *ack_thread(__attribute__((unused)) void *_args) {
         }
 
         ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_UNUSED;
-        oldest_header_slot = (oldest_header_slot + 1) % MAX_REQUEST_SLOTS;
+        oldest_header_slot = (oldest_header_slot + 1) % REQUEST_SLOTS;
         oldest_data_offset = (oldest_data_offset + ack_slot->data_size) % REQUEST_REGION_DATA_SIZE;
         oldest_ack_offset = (oldest_ack_offset + ack_slot->ack_data_size) % ACK_REGION_DATA_SIZE;
         pthread_mutex_unlock(&ack_mutex);

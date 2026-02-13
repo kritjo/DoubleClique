@@ -254,7 +254,7 @@ int request_region_poller(void *arg) {
          * sync up, as when we hit a slot that we actually need to do something with, the next in the loop will be ready
          * when we continue;.
          */
-        for (uint32_t current_head_slot = 0; current_head_slot < MAX_REQUEST_SLOTS; current_head_slot++) {
+        for (uint32_t current_head_slot = 0; current_head_slot < REQUEST_SLOTS; current_head_slot++) {
             header_slot_t slot = request_region->header_slots[current_head_slot];
             if (slot.status == HEADER_SLOT_UNUSED) continue;
             PROFILE_START("server_main_actloop");

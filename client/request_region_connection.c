@@ -52,7 +52,7 @@ void connect_to_request_region(sci_desc_t sd) {
     client_id = (uint8_t) node_id;
     request_region->sisci_node_id = client_id;
 
-    for (uint32_t i = 0; i < MAX_REQUEST_SLOTS; i++) {
+    for (uint32_t i = 0; i < REQUEST_SLOTS; i++) {
         request_region->header_slots[i].status = HEADER_SLOT_UNUSED;
     }
 
