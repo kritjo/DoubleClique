@@ -189,6 +189,7 @@ int main(int argc, char *argv[]) {
 
     // put
     do_experiment_zipf(do_random_zipf_action, 0, true, "PUT");
+    print_profile_report(stdout);
 
     // 2 sided get
     do_experiment_zipf(do_random_zipf_action, 1, true, "2 Sided GET");
@@ -233,7 +234,14 @@ int main(int argc, char *argv[]) {
     do_experiment_uniform(do_random_action, 0.1, true, "10-90 GET-PUT");
 
     // put
+    CLEAR_TIMER("put_blocking");
+    CLEAR_TIMER("get_ack_slot");
+    CLEAR_TIMER("copying");
+    CLEAR_TIMER("hash");
+    CLEAR_TIMER("send_request_region");
+    CLEAR_TIMER("put_blocking");
     do_experiment_uniform(do_random_action, 0, true, "PUT");
+    print_profile_report(stdout);
 
     // 2 sided get
     do_experiment_uniform(do_random_action, 1, true, "2 Sided GET");

@@ -56,6 +56,17 @@ static int timer_count = 0;
         } \
     } while(0)
 
+#define CLEAR_TIMER(timer_name) \
+    do { \
+        for (int i = 0; i < timer_count; i++) { \
+            if (strcmp(timers[i].name, timer_name) == 0) { \
+                timers[i].accumulated_ns = 0; \
+                timers[i].call_count = 0; \
+                break; \
+            } \
+        } \
+    } while(0)
+
 // Print profiling report
 static void print_profile_report(FILE* fp) {
     fprintf(fp, "\n=== PROFILING REPORT ===\n");
@@ -76,6 +87,7 @@ static void print_profile_report(FILE* fp) {
 #define PROFILE_START(timer_name)
 #define PROFILE_END(timer_name)
 #define print_profile_report(fp)
+#define CLEAR_TIMER(timer_name)
 #endif
 
 #endif //DOUBLECLIQUE_PROFILING_H
