@@ -21,7 +21,6 @@
 #include "sequence.h"
 #include "garbage_collection_queue.h"
 #include "garbage_collection.h"
-#include "profiling.h"
 
 static request_region_t *request_region;
 static struct buddy *buddy = NULL;
@@ -193,7 +192,6 @@ int request_region_poller(void *arg) {
 
     //Enter main loop
     while (1) {
-        PROFILE_START("server_main_firstlooppart");
         if (request_region->status == REQUEST_REGION_INACTIVE) {
             thrd_yield();
             continue;
@@ -246,9 +244,7 @@ int request_region_poller(void *arg) {
 
             connected_to_client = true;
         }
-        PROFILE_END("server_main_firstlooppart");
 
-        PROFILE_START("server_main_secondlooppart");
         /* It might seem like this will have a lot of overhead to constantly poll on every slot, it might add a little
          * bit of overhead when just waiting for a single put, but when experiencing constant writing, it will implicitly
          * sync up, as when we hit a slot that we actually need to do something with, the next in the loop will be ready
@@ -257,7 +253,6 @@ int request_region_poller(void *arg) {
         for (uint32_t current_head_slot = 0; current_head_slot < REQUEST_SLOTS; current_head_slot++) {
             header_slot_t slot = request_region->header_slots[current_head_slot];
             if (slot.status == HEADER_SLOT_UNUSED) continue;
-            PROFILE_START("server_main_actloop");
 
             char *data_slot_start = ((char *) request_region) + sizeof(request_region_t);
 
@@ -307,11 +302,8 @@ int request_region_poller(void *arg) {
                     fprintf(stderr, "Illegal state in request region thread\n");
                     exit(EXIT_FAILURE);
             }
-            PROFILE_END("server_main_actloop");
             free(key);
         }
-        PROFILE_END("server_main_secondlooppart");
-        print_profile_report(stdout);
     }
 
     free(queue);
@@ -320,19 +312,16 @@ int request_region_poller(void *arg) {
 
 static void send_put_ack(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
                          sci_sequence_t ack_sequence, uint32_t version_number, enum replica_ack_type ack_type) {
-    PROFILE_START("send_put_ack");
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
     replica_ack_instance->version_number = version_number;
     replica_ack_instance->index_entry_written = -1;
     replica_ack_instance->replica_ack_type = ack_type;
     SCIFlush(ack_sequence, NO_FLAGS); //TODO: is this needed?
-    PROFILE_END("send_put_ack");
 }
 
 static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
                                 uint32_t key_hash, char *index_region, sci_sequence_t ack_sequence, bool write_back,
                                 size_t write_back_offset, char *data_region) {
-    PROFILE_START("send_get_ack_phase1");
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
     index_entry_t *bucket_base = (index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, 0);
 
@@ -368,13 +357,11 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
 
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
-    PROFILE_END("send_get_ack_phase1");
 }
 
 static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
                                 const char *data_pointer, uint32_t transfer_length, size_t return_offset,
                                 sci_sequence_t ack_sequence) {
-    PROFILE_START("send_get_ack_phase2");
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT);
 
     volatile char *dest = ((volatile char *) replica_ack_remote_pointer) + ACK_REGION_SLOT_SIZE + return_offset;
@@ -382,5 +369,4 @@ static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_point
     replica_ack_instance->index_entry_written = -1;
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
-    PROFILE_END("send_get_ack_phase2");
 }

@@ -16,7 +16,6 @@ add_library(commonLib STATIC
         dma_utils.h
         sequence.c
         sequence.h
-        profiling.h
         avx_cpy.c
         avx_cpy.h
 )
