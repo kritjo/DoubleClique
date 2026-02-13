@@ -15,6 +15,7 @@
 #include "request_region_connection.h"
 #include "ack_region.h"
 #include "2_phase_2_sided.h"
+#include "profiling.h"
 
 #define NUM_KEYS 13107
 #define THETA 0.99
