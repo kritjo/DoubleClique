@@ -15,7 +15,6 @@
 #include "request_region_connection.h"
 #include "ack_region.h"
 #include "2_phase_2_sided.h"
-#include "profiling.h"
 
 #define NUM_KEYS 13107
 #define THETA 0.99
@@ -190,7 +189,7 @@ int main(int argc, char *argv[]) {
 
     // put
     do_experiment_zipf(do_random_zipf_action, 0, true, "PUT");
-    print_profile_report(stdout);
+    
 
     // 2 sided get
     do_experiment_zipf(do_random_zipf_action, 1, true, "2 Sided GET");
@@ -242,7 +241,6 @@ int main(int argc, char *argv[]) {
     CLEAR_TIMER("send_request_region");
     CLEAR_TIMER("put_blocking");
     do_experiment_uniform(do_random_action, 0, true, "PUT");
-    print_profile_report(stdout);
 
     // 2 sided get
     do_experiment_uniform(do_random_action, 1, true, "2 Sided GET");

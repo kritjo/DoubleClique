@@ -91,6 +91,7 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
     PROFILE_END("send_request_region");
 
     PROFILE_END("put_blocking");
+    print_profile_report(stdout);
     return ack_slot->promise;
 }
 
