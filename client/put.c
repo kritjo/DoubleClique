@@ -3,6 +3,7 @@
 #include <sched.h>
 #include <string.h>
 #include "put.h"
+#include "profiling.h"
 #include "sisci_glob_defs.h"
 #include "request_region.h"
 #include "get_node_id.h"
