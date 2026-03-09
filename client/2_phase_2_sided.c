@@ -205,7 +205,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                         //TODO: Full key verification?
 
                         memcpy(ack_slot->promise->data, ack_data + key_len, value_len);
-                        ack_slot->promise->result = PROMISE_SUCCESS;
+                        ack_slot->promise->result = PROMISE_SUCCESS_PH1;
                         get_2_sided_decrement();
                         return true;
                     }
