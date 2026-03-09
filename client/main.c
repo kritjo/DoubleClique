@@ -40,6 +40,9 @@ static void do_experiment_zipf(request_promise_t *(promise_func)(const char *key
     uint32_t errors[REQUEST_PROMISE_STATUS_COUNT] = {0};
     struct timespec start, end;
 
+    // Clean sheet
+    sleep(1);
+
     clock_gettime(CLOCK_MONOTONIC, &start);
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
         promises[i] = promise_func(keys[key_for_sample[i]], sample_data, VALUE_LEN, chance_for_get, get_2_sided);
@@ -68,6 +71,9 @@ static void do_experiment_uniform(request_promise_t *(promise_func)(unsigned cha
     request_promise_t *promises[NUM_SAMPLES];
     uint32_t errors[REQUEST_PROMISE_STATUS_COUNT] = {0};
     struct timespec start, end;
+
+    // Clean sheet
+    sleep(1);
 
     clock_gettime(CLOCK_MONOTONIC, &start);
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {

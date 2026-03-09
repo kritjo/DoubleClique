@@ -186,7 +186,7 @@ int request_region_poller(void *arg) {
     //Enter main loop
     while (1) {
         if (request_region->status == REQUEST_REGION_INACTIVE) {
-            thrd_yield();
+            _mm_pause();
             continue;
         }
 
