@@ -18,7 +18,6 @@
 
 #include "buddy_alloc.h"
 #include "request_region_utils.h"
-#include "sequence.h"
 #include "garbage_collection_queue.h"
 #include "garbage_collection.h"
 
@@ -35,8 +34,7 @@ static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_point
                                 uint32_t transfer_length, size_t return_offset);
 
 static void put(request_region_poller_thread_args_t *args, header_slot_t slot, uint32_t current_head_slot,
-         volatile replica_ack_t *replica_ack, uint32_t key_hash, char *key, sci_sequence_t ack_sequence,
-         size_t offset, queue_t *queue) {
+         volatile replica_ack_t *replica_ack, uint32_t key_hash, char *key, size_t offset, queue_t *queue) {
     char *data_slot_start = ((char *) request_region) + sizeof(request_region_t);
 
     // Use a single allocation for both data and hash_data
@@ -184,7 +182,6 @@ int request_region_poller(void *arg) {
     sci_map_t ack_map;
     volatile replica_ack_t *replica_ack;
     sci_error_t sci_error;
-    sci_sequence_t ack_sequence;
 
     //Enter main loop
     while (1) {
@@ -217,24 +214,6 @@ int request_region_poller(void *arg) {
 
             if (sci_error != SCI_ERR_OK) {
                 fprintf(stderr, "Error mapping remote segment: %s\n", SCIGetErrorString(sci_error));
-                exit(EXIT_FAILURE);
-            }
-
-            SEOE(SCICreateMapSequence,
-                 ack_map,
-                 &ack_sequence,
-                 NO_FLAGS);
-
-            sci_error_t error;
-            sci_sequence_status_t status;
-
-            status = SCIStartSequence(ack_sequence, NO_FLAGS, &error);
-            if (error != SCI_ERR_OK) {
-                fprintf(stderr, "SCIStartSequence returned non SCI_ERR_OK, which should not be possible: %s\n", SCIGetErrorString(error));
-                exit(EXIT_FAILURE);
-            }
-            if (status != SCI_SEQ_OK) {
-                fprintf(stderr, "SCIStartSequence returned non SCI_SEQ_OK: %d\n", status);
                 exit(EXIT_FAILURE);
             }
 
@@ -272,7 +251,7 @@ int request_region_poller(void *arg) {
 
             switch (slot.status) {
                 case HEADER_SLOT_USED_PUT:
-                    put(args, slot, current_head_slot, replica_ack, key_hash, key, ack_sequence, offset, queue);
+                    put(args, slot, current_head_slot, replica_ack, key_hash, key, offset, queue);
                     break;
                 case HEADER_SLOT_USED_GET_PHASE1:
                     // Now we need to ship our index entries for this keyhash back
