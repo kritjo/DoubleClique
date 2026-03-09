@@ -43,7 +43,7 @@ static void do_experiment_zipf(request_promise_t *(promise_func)(const char *key
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
         promises[i] = promise_func(keys[key_for_sample[i]], sample_data, VALUE_LEN, chance_for_get, get_2_sided);
     }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
+    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING) _mm_pause();
     clock_gettime(CLOCK_MONOTONIC, &end);
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
         if (promises[i]->result == PROMISE_PENDING) {
@@ -72,7 +72,7 @@ static void do_experiment_uniform(request_promise_t *(promise_func)(unsigned cha
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
         promises[i] = promise_func(sample_data, VALUE_LEN, chance_for_get, get_2_sided);
     }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
+    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING) _mm_pause();
     clock_gettime(CLOCK_MONOTONIC, &end);
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
         if (promises[i]->result == PROMISE_PENDING) {
@@ -142,7 +142,7 @@ int main(int argc, char *argv[]) {
 
         promise = put_blocking_until_available_put_request_region_slot(keys[index], 36, sample_data, VALUE_LEN);
 
-        while (promise->result == PROMISE_PENDING);
+        while (promise->result == PROMISE_PENDING) _mm_pause();
         if (promise->result == PROMISE_SUCCESS) {
             index++;
         }
@@ -172,7 +172,7 @@ int main(int argc, char *argv[]) {
         promises[i] = do_random_zipf_action(keys[key_for_sample[i]], sample_data, VALUE_LEN, 0.9, true);
     }
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
+        while(promises[i]->result == PROMISE_PENDING) _mm_pause();
         if (promises[i]->result == PROMISE_SUCCESS) {
             if (promises[i]->operation == OP_GET) {
                 free(promises[i]->data);

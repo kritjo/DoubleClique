@@ -72,19 +72,28 @@ void init_ack_region(sci_desc_t sd) {
 ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_len, uint32_t value_len, uint32_t header_data_length, uint32_t ack_data_length, uint32_t version_number, request_promise_t *promise) {
     if (request_type == GET_PHASE1) {
         bool available_get_queue_space = false;
-        while (!available_get_queue_space) {
+        while (1) {
             pthread_mutex_lock(&ack_mutex);
             available_get_queue_space = current_get_2_sided_requests < QUEUE_SPACE;
             if (available_get_queue_space) {
                 current_get_2_sided_requests++;
             }
             pthread_mutex_unlock(&ack_mutex);
+            if (available_get_queue_space) {
+                break;
+            }
+            _mm_pause();
         }
     }
 
     bool available_slot = false;
     ack_slot_t *ack_slot;
     while (!available_slot) {
+        if ((free_header_slot + 1) % REQUEST_SLOTS == oldest_header_slot) {
+            _mm_pause();
+            continue;
+        }
+
         pthread_mutex_lock(&ack_mutex);
         available_slot = (free_header_slot + 1) % REQUEST_SLOTS != oldest_header_slot;
         if (available_slot) {
@@ -141,6 +150,10 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
             free_header_slot = (free_header_slot + 1) % REQUEST_SLOTS;
         }
         pthread_mutex_unlock(&ack_mutex);
+
+        if (!available_slot) {
+            _mm_pause();
+        }
     }
 
     return ack_slot;
@@ -185,6 +198,7 @@ void *ack_thread(__attribute__((unused)) void *_args) {
         oldest_ack_offset = (oldest_ack_offset + ack_slot->ack_data_size) % ACK_REGION_DATA_SIZE;
         pthread_mutex_unlock(&ack_mutex);
 
+        _mm_pause();
     }
 
     return NULL;
@@ -192,7 +206,7 @@ void *ack_thread(__attribute__((unused)) void *_args) {
 
 static void block_for_available_space(uint32_t required_space, uint32_t *free_offset, uint32_t oldest_offset, uint32_t *out_starting_offset, uint32_t region_space) {
     bool available_space = false;
-    while (!available_space) {
+    while (1) {
         uint32_t used = (*free_offset + region_space
                          - oldest_offset)
                         % region_space;
@@ -204,6 +218,9 @@ static void block_for_available_space(uint32_t required_space, uint32_t *free_of
             // There's enough space
             *out_starting_offset = *free_offset;
             *free_offset = (*free_offset + required_space) % region_space;
+            break;
         }
+
+        _mm_pause();
     }
 }
