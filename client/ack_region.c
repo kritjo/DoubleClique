@@ -1,4 +1,5 @@
 #include <sisci_api.h>
+#include <immintrin.h>
 #include <stdlib.h>
 #include <time.h>
 #include "ack_region.h"

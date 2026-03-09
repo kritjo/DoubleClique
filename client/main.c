@@ -1,5 +1,6 @@
 #include "main.h"
 
+#include <immintrin.h>
 #include <stdlib.h>
 #include <sisci_api.h>
 #include <time.h>
