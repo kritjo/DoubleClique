@@ -305,7 +305,7 @@ void send_phase_2_get(uint32_t version_number, uint32_t replica_index, uint8_t k
         version_number,
         (size_t) server_data_offset,
         ack_slot->starting_ack_data_offset,
-        replica_index,
+        (uint8_t) replica_index,
         0,
         HEADER_SLOT_USED_GET_PHASE2
     );
