@@ -46,7 +46,9 @@ static void do_experiment_zipf(request_promise_t *(promise_func)(const char *key
     while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
     clock_gettime(CLOCK_MONOTONIC, &end);
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
+        if (promises[i]->result == PROMISE_PENDING) {
+            printf("Warning: out of order promise, should not happen.");
+        }
         if (promises[i]->result == PROMISE_SUCCESS) {
             if (promises[i]->operation == OP_GET) {
                 free(promises[i]->data);
@@ -73,7 +75,9 @@ static void do_experiment_uniform(request_promise_t *(promise_func)(unsigned cha
     while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
     clock_gettime(CLOCK_MONOTONIC, &end);
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
+        if (promises[i]->result == PROMISE_PENDING) {
+            printf("Warning: out of order promise, should not happen.");
+        }
         if (promises[i]->result == PROMISE_SUCCESS) {
             if (promises[i]->operation == OP_GET) {
                 free(promises[i]->data);
