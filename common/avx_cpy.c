@@ -3,11 +3,11 @@
 #include <stdint.h>
 
 static inline void
-_memcpy_nt_avx2_helper(volatile void *__restrict dst,
+_memcpy_nt_avx2_helper(void *__restrict dst,
                        const void *__restrict src,
                        size_t bytes)
 {
-    volatile unsigned char       *__restrict dest = (unsigned char *)dst;
+    unsigned char       *__restrict dest = (unsigned char *)dst;
     const unsigned char *__restrict s    = (const unsigned char *)src;
 
     size_t i, vec_bytes, vec_end, prefix;
@@ -62,14 +62,14 @@ void memcpy_nt_avx2(volatile void *__restrict dst,
     size_t j;
 
     if (bytes < (size_t)chunk * 2) {
-        _memcpy_nt_avx2_helper(dst, src, bytes);
+        _memcpy_nt_avx2_helper((void *__restrict) dst, src, bytes);
         _mm_sfence();
     } else {
         dst_tmp = (unsigned char *)dst;
         src_tmp = (unsigned char *)src;
 
         for (j = 0; j < bytes; j += chunk) {
-            _memcpy_nt_avx2_helper(dst_tmp, src_tmp, chunk);
+            _memcpy_nt_avx2_helper((void *__restrict) dst_tmp, src_tmp, chunk);
             _mm_sfence();
             dst_tmp += chunk;
             src_tmp += chunk;
