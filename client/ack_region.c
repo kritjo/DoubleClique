@@ -237,6 +237,6 @@ void insert_duration(request_promise_t *promise, struct timespec ts_pre, struct 
 
 void insert_duration_end_now(request_promise_t *promise, struct timespec ts_pre) {
     struct timespec ts_post;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    clock_gettime(CLOCK_MONOTONIC, &ts_post);
     insert_duration(promise, ts_pre, ts_post);
 }
