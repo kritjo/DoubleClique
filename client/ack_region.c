@@ -167,7 +167,11 @@ void get_2_sided_decrement(void) {
 void *ack_thread(__attribute__((unused)) void *_args) {
     while (1) {
         pthread_mutex_lock(&ack_mutex);
-        if (oldest_header_slot == free_header_slot) { pthread_mutex_unlock(&ack_mutex); continue; }
+        if (oldest_header_slot == free_header_slot) { 
+            pthread_mutex_unlock(&ack_mutex);
+            _mm_pause();
+            continue; 
+        }
 
         ack_slot_t *ack_slot = &ack_slots[oldest_header_slot];
 
