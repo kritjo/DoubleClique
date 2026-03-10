@@ -4,7 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// TODO: These might have some issues for the last bucket/slot maybe
 #define INDEX_REGION_SIZE 0x200000
 #define INDEX_SLOTS_COUNT (INDEX_REGION_SIZE/sizeof(index_entry_t))
 #define INDEX_SLOTS_PR_BUCKET 4

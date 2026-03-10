@@ -41,7 +41,7 @@ enum header_slot_status {
 
 typedef struct {
     uint8_t key_length;
-    uint8_t replica_write_back_hint; //TODO: Perhaps we should send this as a pio instead of broadcast but this is simpler
+    uint8_t replica_write_back_hint;
     uint32_t value_length;
     uint32_t version_number;
     uint32_t payload_hash; // The payload hash is just hash(keyhash valuehash)

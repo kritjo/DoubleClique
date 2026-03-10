@@ -20,7 +20,6 @@ int main(int argc, char* argv[]) {
     sci_map_t data_map;
     void *data;
 
-    //TODO: needs to be checked
     if (argc != 2) {
         fprintf(stderr, "Need to pass replica id!\n");
         exit(EXIT_FAILURE);

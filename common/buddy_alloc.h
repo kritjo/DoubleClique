@@ -645,7 +645,7 @@ struct volatile_buddy *volatile_buddy_init_alignment(unsigned char *at, volatile
     }
     buddy_tree_order = buddy_tree_order_for_memory(memory_size, alignment);
 
-    /* TODO check for overlap between buddy metadata and main block */
+    /*  check for overlap between buddy metadata and main block */
     buddy = (struct volatile_buddy *) at;
     buddy->arena.main = main;
     buddy->memory_size = memory_size;

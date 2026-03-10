@@ -79,7 +79,7 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
             existing_slot_for_key(args->index_region, args->data_region, key_hash,
                                   slot.key_length, key);
             send_put_ack(args->replica_number, replica_ack, current_head_slot, slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
-            request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+            request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
             free(data);
             return;
         }
@@ -90,7 +90,7 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
         // If we do not find one, there is no space left
         if (index_slot == NULL) {
             send_put_ack(args->replica_number, replica_ack, current_head_slot, slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
-            request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+            request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
             free(data);
             return;
         }
@@ -105,7 +105,7 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
                 // in progress 2 phase gets.
             } else {
                 send_put_ack(args->replica_number, replica_ack, current_head_slot, slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
-                request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+                request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
                 free(data);
                 return;
             }
@@ -140,7 +140,7 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
     free(data);
 
     // Need to do this before sending ack in case of race
-    request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED; // TODO: figure out if this has some bad implications as we write to and read from a 'read-only' memory right? This is not actually written to the client or broadcasted
+    request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
 
     send_put_ack(args->replica_number, replica_ack, current_head_slot, slot.version_number, REPLICA_ACK_SUCCESS);
 }
