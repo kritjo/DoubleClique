@@ -1,5 +1,7 @@
+#define PERF_INTERNAL_IMPL 1
 #include "profiler.h"
 
+#if PERF_ENABLED
 #include <inttypes.h>
 #include <limits.h>
 #include <pthread.h>
@@ -410,3 +412,41 @@ void perf_print_report(const char *title,
         perf_reset_all();
     }
 }
+#else
+uint64_t perf_now_ns(void) {
+    return 0;
+}
+
+void perf_record_ns(uint32_t id, uint64_t duration_ns) {
+    (void) id;
+    (void) duration_ns;
+}
+
+void perf_record_ns_bytes(uint32_t id, uint64_t duration_ns, uint64_t bytes) {
+    (void) id;
+    (void) duration_ns;
+    (void) bytes;
+}
+
+void perf_increment(uint32_t id, uint64_t amount) {
+    (void) id;
+    (void) amount;
+}
+
+void perf_reset_all(void) {
+}
+
+void perf_print_report(const char *title,
+                       const perf_report_node_t *roots,
+                       size_t root_count,
+                       const char *const *metric_names,
+                       size_t metric_name_count,
+                       bool clear_after_print) {
+    (void) title;
+    (void) roots;
+    (void) root_count;
+    (void) metric_names;
+    (void) metric_name_count;
+    (void) clear_after_print;
+}
+#endif
