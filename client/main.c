@@ -22,7 +22,6 @@
 #define THETA 0.99
 #define NUM_SAMPLES 100000
 #define VALUE_LEN 8
-#define DO_NON_BATCH false
 
 static sci_desc_t sd;
 
@@ -44,46 +43,148 @@ static int cmp_u64(const void *a, const void *b) {
     return (aa > bb) - (aa < bb);
 }
 
-static void finish_experiment(
-    request_promise_t *promises[NUM_SAMPLES],
+typedef request_promise_t *(*submit_fn_t)(
+    void *ctx,
+    uint32_t sample_idx,
+    double chance_for_get,
+    bool get_2_sided
+);
+
+struct uniform_submit_ctx {
+    request_promise_t *(*promise_func)(
+        unsigned char *data,
+        uint32_t value_len,
+        double chance_for_get,
+        bool get_2_sided
+    );
+};
+
+struct zipf_submit_ctx {
+    request_promise_t *(*promise_func)(
+        const char *key,
+        unsigned char *data,
+        uint32_t value_len,
+        double chance_for_get,
+        bool get_2_sided
+    );
+};
+
+static request_promise_t *submit_uniform(
+    void *ctx,
+    uint32_t sample_idx,
+    double chance_for_get,
+    bool get_2_sided
+) {
+    (void)sample_idx;
+    struct uniform_submit_ctx *u = ctx;
+    return u->promise_func(sample_data, VALUE_LEN, chance_for_get, get_2_sided);
+}
+
+static request_promise_t *submit_zipf(
+    void *ctx,
+    uint32_t sample_idx,
+    double chance_for_get,
+    bool get_2_sided
+) {
+    struct zipf_submit_ctx *z = ctx;
+    return z->promise_func(
+        keys[key_for_sample[sample_idx]],
+        sample_data,
+        VALUE_LEN,
+        chance_for_get,
+        get_2_sided
+    );
+}
+
+static void do_experiment_with_max_inflight(
+    submit_fn_t submit_fn,
+    void *submit_ctx,
+    double chance_for_get,
+    bool get_2_sided,
     const char *experiment_name,
     const char *distribution_name,
-    struct timespec start
+    uint32_t max_inflight
 ) {
+    if (max_inflight == 0) max_inflight = 1;
+    if (max_inflight > NUM_SAMPLES) max_inflight = NUM_SAMPLES;
+
+    request_promise_t **active = calloc(max_inflight, sizeof(*active));
+    uint64_t *latencies = malloc(NUM_SAMPLES * sizeof(*latencies));
     uint32_t errors[REQUEST_PROMISE_STATUS_COUNT] = {0};
-    uint64_t latencies[NUM_SAMPLES];
+
+    if (!active || !latencies) {
+        fprintf(stderr, "allocation failed\n");
+        free(active);
+        free(latencies);
+        return;
+    }
+
+    sleep(1);
+
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    uint32_t next_to_submit = 0;
+    uint32_t completed = 0;
     uint64_t total_latency_ns = 0;
 
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING) _mm_pause();
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        if (promises[i]->result == PROMISE_PENDING) {
-            printf("WARNING: out of order promise pending. Should never happen.");
+    for (uint32_t slot = 0; slot < max_inflight && next_to_submit < NUM_SAMPLES; slot++) {
+        active[slot] = submit_fn(submit_ctx, next_to_submit, chance_for_get, get_2_sided);
+        next_to_submit++;
+    }
+
+    while (completed < NUM_SAMPLES) {
+        bool made_progress = false;
+
+        for (uint32_t slot = 0; slot < max_inflight; slot++) {
+            request_promise_t *p = active[slot];
+            if (p == NULL) continue;
+            if (p->result == PROMISE_PENDING) continue;
+
+            made_progress = true;
+
+            errors[p->result]++;
+
+            latencies[completed] =
+                (uint64_t)p->duration.tv_sec * NS_PER_SEC +
+                (uint64_t)p->duration.tv_nsec;
+            total_latency_ns += latencies[completed];
+            completed++;
+
+            if (p->result == PROMISE_SUCCESS && p->operation == OP_GET) {
+                free(p->data);
+            }
+            free(p);
+
+            if (next_to_submit < NUM_SAMPLES) {
+                active[slot] = submit_fn(
+                    submit_ctx,
+                    next_to_submit,
+                    chance_for_get,
+                    get_2_sided
+                );
+                next_to_submit++;
+            } else {
+                active[slot] = NULL;
+            }
+        }
+
+        if (!made_progress) {
+            _mm_pause();
         }
     }
 
     struct timespec end;
     clock_gettime(CLOCK_MONOTONIC, &end);
 
-    uint64_t wall_ns =
-        (uint64_t)(end.tv_sec - start.tv_sec) * NS_PER_SEC +
-        (uint64_t)(end.tv_nsec - start.tv_nsec);
-
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        request_promise_t *p = promises[i];
-
-        errors[p->result]++;
-
-        latencies[i] =
-            (uint64_t)p->duration.tv_sec * NS_PER_SEC +
-            (uint64_t)p->duration.tv_nsec;
-
-        total_latency_ns += latencies[i];
-
-        if (p->result == PROMISE_SUCCESS && p->operation == OP_GET) {
-            free(p->data);
-        }
-        free(p);
+    time_t wall_sec = end.tv_sec - start.tv_sec;
+    long wall_nsec = end.tv_nsec - start.tv_nsec;
+    if (wall_nsec < 0) {
+        wall_sec--;
+        wall_nsec += 1000000000L;
     }
+
+    uint64_t wall_ns = (uint64_t)wall_sec * NS_PER_SEC + (uint64_t)wall_nsec;
 
     qsort(latencies, NUM_SAMPLES, sizeof(latencies[0]), cmp_u64);
 
@@ -91,6 +192,7 @@ static void finish_experiment(
     uint64_t p50_ns = latencies[((NUM_SAMPLES - 1) * 50) / 100];
     uint64_t p95_ns = latencies[((NUM_SAMPLES - 1) * 95) / 100];
     uint64_t p99_ns = latencies[((NUM_SAMPLES - 1) * 99) / 100];
+    uint64_t time_per_op_ns = wall_ns / NUM_SAMPLES;
 
     double throughput_ops_per_sec =
         wall_ns ? ((double)NUM_SAMPLES * 1e9) / (double)wall_ns : 0.0;
@@ -98,57 +200,72 @@ static void finish_experiment(
     double avg_in_flight =
         wall_ns ? (double)total_latency_ns / (double)wall_ns : 0.0;
 
-    printf("%s with %u %s samples\n", experiment_name, NUM_SAMPLES, distribution_name);
-    printf("    wall time              : %" PRIu64 " ns\n", wall_ns);
-    printf("    time/op at throughput  : %" PRIu64 " ns\n", wall_ns/NUM_SAMPLES);
-    printf("    avg latency            : %" PRIu64 " ns\n", avg_latency_ns);
-    printf("    p50 latency            : %" PRIu64 " ns\n", p50_ns);
-    printf("    p95 latency            : %" PRIu64 " ns\n", p95_ns);
-    printf("    p99 latency            : %" PRIu64 " ns\n", p99_ns);
-    printf("    throughput             : %.2f ops/sec\n", throughput_ops_per_sec);
-    printf("    avg in-flight          : %.2f\n", avg_in_flight);
+    printf("%s with %u %s samples (max_inflight=%u)\n",
+           experiment_name, NUM_SAMPLES, distribution_name, max_inflight);
+    printf("    wall time                 : %" PRIu64 " ns\n", wall_ns);
+    printf("    time/op at throughput     : %" PRIu64 " ns\n", time_per_op_ns);
+    printf("    avg latency               : %" PRIu64 " ns\n", avg_latency_ns);
+    printf("    p50 latency               : %" PRIu64 " ns\n", p50_ns);
+    printf("    p95 latency               : %" PRIu64 " ns\n", p95_ns);
+    printf("    p99 latency               : %" PRIu64 " ns\n", p99_ns);
+    printf("    throughput                : %.2f ops/sec\n", throughput_ops_per_sec);
+    printf("    avg in-flight             : %.2f\n", avg_in_flight);
 
     for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
         printf("    Status %u: %u\n", i, errors[i]);
     }
+
+    free(active);
+    free(latencies);
 }
 
-static void do_experiment_uniform(
-    request_promise_t *(*promise_func)(unsigned char *data, uint32_t value_len, double chance_for_get, bool get_2_sided),
+static void do_experiment_uniform_with_max_inflight(
+    request_promise_t *(*promise_func)(
+        unsigned char *data,
+        uint32_t value_len,
+        double chance_for_get,
+        bool get_2_sided
+    ),
     double chance_for_get,
     bool get_2_sided,
-    const char *experiment_name
+    const char *experiment_name,
+    uint32_t max_inflight
 ) {
-    request_promise_t *promises[NUM_SAMPLES];
-    struct timespec start;
-
-    sleep(1);
-
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = promise_func(sample_data, VALUE_LEN, chance_for_get, get_2_sided);
-    }
-
-    finish_experiment(promises, experiment_name, "uniform", start);
+    struct uniform_submit_ctx ctx = { .promise_func = promise_func };
+    do_experiment_with_max_inflight(
+        submit_uniform,
+        &ctx,
+        chance_for_get,
+        get_2_sided,
+        experiment_name,
+        "uniform",
+        max_inflight
+    );
 }
 
-static void do_experiment_zipf(
-    request_promise_t *(*promise_func)(const char *key, unsigned char *data, uint32_t value_len, double chance_for_get, bool get_2_sided),
+static void do_experiment_zipf_with_max_inflight(
+    request_promise_t *(*promise_func)(
+        const char *key,
+        unsigned char *data,
+        uint32_t value_len,
+        double chance_for_get,
+        bool get_2_sided
+    ),
     double chance_for_get,
     bool get_2_sided,
-    const char *experiment_name
+    const char *experiment_name,
+    uint32_t max_inflight
 ) {
-    request_promise_t *promises[NUM_SAMPLES];
-    struct timespec start;
-
-    sleep(1);
-
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = promise_func(keys[key_for_sample[i]], sample_data, VALUE_LEN, chance_for_get, get_2_sided);
-    }
-
-    finish_experiment(promises, experiment_name, "zipf", start);
+    struct zipf_submit_ctx ctx = { .promise_func = promise_func };
+    do_experiment_with_max_inflight(
+        submit_zipf,
+        &ctx,
+        chance_for_get,
+        get_2_sided,
+        experiment_name,
+        "zipf",
+        max_inflight
+    );
 }
 
 int main(int argc, char *argv[]) {
@@ -241,95 +358,46 @@ int main(int argc, char *argv[]) {
     }
     printf("warmed up\n");
 
-    // Do 90-10 get-put
-    do_experiment_zipf(do_random_zipf_action, 0.9, true, "90-10 GET-PUT");
+    const uint32_t inflights[] = {1, 2, 4, 8, 16, 32, 64, 128};
 
-    // Do 90-10 get-put
-    do_experiment_zipf(do_random_zipf_action, 0.5, true, "50-50 GET-PUT");
+    struct {
+        double chance_for_get;
+        bool get_2_sided;
+        const char *name;
+    } cases[] = {
+        {0.9, true,  "90-10 GET-PUT"},
+        {0.5, true,  "50-50 GET-PUT"},
+        {0.1, true,  "10-90 GET-PUT"},
+        {0.0, true,  "PUT"},
+        {1.0, true,  "2 Sided GET"},
+        {1.0, false, "1 Sided GET"},
+    };
 
-    // Do 90-10 get-put
-    do_experiment_zipf(do_random_zipf_action, 0.1, true, "10-90 GET-PUT");
+    for (uint32_t j = 0; j < sizeof(inflights) / sizeof(inflights[0]); j++) {
+        uint32_t max_inflight = inflights[j];
 
-    // put
-    do_experiment_zipf(do_random_zipf_action, 0, true, "PUT");
-    
+        printf("\n=== max_inflight = %u ===\n", max_inflight);
 
-    // 2 sided get
-    do_experiment_zipf(do_random_zipf_action, 1, true, "2 Sided GET");
-
-    // 1 sided get
-    do_experiment_zipf(do_random_zipf_action, 1, false, "1 Sided GET");
-
-#if DO_NON_BATCH
-    // 2 sided get - non batch
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_zipf_action(keys[key_for_sample[i]], sample_data, VALUE_LEN, 1, true);
-        while(promises[i]->result == PROMISE_PENDING);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    memset(errors, 0, REQUEST_PROMISE_STATUS_COUNT * sizeof(uint32_t));
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) {
-                free(promises[i]->data);
-            }
+        for (uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            do_experiment_zipf_with_max_inflight(
+                do_random_zipf_action,
+                cases[i].chance_for_get,
+                cases[i].get_2_sided,
+                cases[i].name,
+                max_inflight
+            );
         }
-        errors[promises[i]->result]++;
-        free(promises[i]);
-    }
-    printf("2 sided GET - non batched - took %ld ns pr with zipf\n", (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
-#endif
 
-    // Uniform time
-    // Do 90-10 get-put
-    do_experiment_uniform(do_random_action, 0.9, true, "90-10 GET-PUT");
-
-    // Do 90-10 get-put
-    do_experiment_uniform(do_random_action, 0.5, true, "50-50 GET-PUT");
-
-    // Do 90-10 get-put
-    do_experiment_uniform(do_random_action, 0.1, true, "10-90 GET-PUT");
-
-    // put
-    do_experiment_uniform(do_random_action, 0, true, "PUT");
-
-    // 2 sided get
-    do_experiment_uniform(do_random_action, 1, true, "2 Sided GET");
-
-    // 1 sided get
-    do_experiment_uniform(do_random_action, 1, false, "1 Sided GET");
-
-#if DO_NON_BATCH
-    // 2 sided get - non batch
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        promises[i] = do_random_action(sample_data, VALUE_LEN, 1, true);
-        while(promises[i]->result == PROMISE_PENDING);
-    }
-    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    memset(errors, 0, REQUEST_PROMISE_STATUS_COUNT * sizeof(uint32_t));
-    for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while(promises[i]->result == PROMISE_PENDING);
-        if (promises[i]->result == PROMISE_SUCCESS) {
-            if (promises[i]->operation == OP_GET) {
-                free(promises[i]->data);
-            }
+        for (uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            do_experiment_uniform_with_max_inflight(
+                do_random_action,
+                cases[i].chance_for_get,
+                cases[i].get_2_sided,
+                cases[i].name,
+                max_inflight
+            );
         }
-        errors[promises[i]->result]++;
-        free(promises[i]);
     }
-    printf("2 sided GET - non batched - took %ld ns pr without zipf\n", (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
-    for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
-        printf("    Status %d: %d\n", i, errors[i]);
-    }
-#endif
 
     printf("Completed!\n");
 
