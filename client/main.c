@@ -51,7 +51,6 @@ static void do_experiment_zipf(request_promise_t *(promise_func)(const char *key
         promises[i] = promise_func(keys[key_for_sample[i]], sample_data, VALUE_LEN, chance_for_get, get_2_sided);
     }
     while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING) _mm_pause();
-    clock_gettime(CLOCK_MONOTONIC, &end);
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
         if (promises[i]->result == PROMISE_PENDING) {
             printf("Warning: out of order promise, should not happen.");
@@ -70,6 +69,7 @@ static void do_experiment_zipf(request_promise_t *(promise_func)(const char *key
         }
         free(promises[i]);
     }
+    clock_gettime(CLOCK_MONOTONIC, &end);
     printf("%s with %d zipf samples took %ld(%ld) ns. %ld(%ld) ns/sample\n",
         experiment_name,
         NUM_SAMPLES,
@@ -98,7 +98,6 @@ static void do_experiment_uniform(request_promise_t *(promise_func)(unsigned cha
         promises[i] = promise_func(sample_data, VALUE_LEN, chance_for_get, get_2_sided);
     }
     while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING) _mm_pause();
-    clock_gettime(CLOCK_MONOTONIC, &end);
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
         if (promises[i]->result == PROMISE_PENDING) {
             printf("Warning: out of order promise, should not happen.");
@@ -117,6 +116,7 @@ static void do_experiment_uniform(request_promise_t *(promise_func)(unsigned cha
         }
         free(promises[i]);
     }
+    clock_gettime(CLOCK_MONOTONIC, &end);
     printf("%s with %d uniform samples took %ld(%ld) ns. %ld(%ld) ns/sample\n",
         experiment_name,
         NUM_SAMPLES,
