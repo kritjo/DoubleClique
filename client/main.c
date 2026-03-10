@@ -54,9 +54,10 @@ static void finish_experiment(
     uint64_t latencies[NUM_SAMPLES];
     uint64_t total_latency_ns = 0;
 
+    while (promises[NUM_SAMPLES-1]->result == PROMISE_PENDING) _mm_pause();
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
-        while (promises[i]->result == PROMISE_PENDING) {
-            _mm_pause();
+        if (promises[i]->result == PROMISE_PENDING) {
+            printf("WARNING: out of order promise pending. Should never happen.");
         }
     }
 
