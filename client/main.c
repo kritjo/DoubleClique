@@ -100,7 +100,7 @@ static void finish_experiment(
 
     printf("%s with %u %s samples\n", experiment_name, NUM_SAMPLES, distribution_name);
     printf("    wall time                 : %" PRIu64 " ns\n", wall_ns);
-    printf("    avg latency (overlapping) : %" PRIu64 " ns\n", wall_ns);
+    printf("    avg latency (overlapping) : %" PRIu64 " ns\n", wall_ns/NUM_SAMPLES);
     printf("    avg latency               : %" PRIu64 " ns\n", avg_latency_ns);
     printf("    p50 latency               : %" PRIu64 " ns\n", p50_ns);
     printf("    p95 latency               : %" PRIu64 " ns\n", p95_ns);
