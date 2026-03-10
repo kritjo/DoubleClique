@@ -447,7 +447,7 @@ int main(int argc, char *argv[]) {
 
     perf_reset_all();
 
-    const uint32_t inflights[] = {1, 2, 4, 8, 16, 32, 64, 128};
+    const uint32_t inflights[] = {1, 128};
 
     struct {
         double chance_for_get;

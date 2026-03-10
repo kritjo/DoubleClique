@@ -436,8 +436,7 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
             uint32_t transfer_length = local_entry.key_length + local_entry.data_length + sizeof(uint32_t);
             bool should_writeback =
                 local_entry.hash == key_hash &&
-                transfer_length <= SPECULATIVE_SIZE &&
-                replica_ack_instance->index_entry_written == -1;
+                transfer_length <= SPECULATIVE_SIZE;
             copy_bucket_writeback_match_check_ns += perf_now_ns() - match_check_start_ns;
 
             if (should_writeback) {
