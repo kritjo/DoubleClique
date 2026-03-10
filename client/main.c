@@ -99,14 +99,14 @@ static void finish_experiment(
         wall_ns ? (double)total_latency_ns / (double)wall_ns : 0.0;
 
     printf("%s with %u %s samples\n", experiment_name, NUM_SAMPLES, distribution_name);
-    printf("    wall time                 : %" PRIu64 " ns\n", wall_ns);
-    printf("    avg latency (overlapping) : %" PRIu64 " ns\n", wall_ns/NUM_SAMPLES);
-    printf("    avg latency               : %" PRIu64 " ns\n", avg_latency_ns);
-    printf("    p50 latency               : %" PRIu64 " ns\n", p50_ns);
-    printf("    p95 latency               : %" PRIu64 " ns\n", p95_ns);
-    printf("    p99 latency               : %" PRIu64 " ns\n", p99_ns);
-    printf("    throughput                : %.2f ops/sec\n", throughput_ops_per_sec);
-    printf("    avg in-flight             : %.2f\n", avg_in_flight);
+    printf("    wall time              : %" PRIu64 " ns\n", wall_ns);
+    printf("    time/op at throughput  : %" PRIu64 " ns\n", wall_ns/NUM_SAMPLES);
+    printf("    avg latency            : %" PRIu64 " ns\n", avg_latency_ns);
+    printf("    p50 latency            : %" PRIu64 " ns\n", p50_ns);
+    printf("    p95 latency            : %" PRIu64 " ns\n", p95_ns);
+    printf("    p99 latency            : %" PRIu64 " ns\n", p99_ns);
+    printf("    throughput             : %.2f ops/sec\n", throughput_ops_per_sec);
+    printf("    avg in-flight          : %.2f\n", avg_in_flight);
 
     for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
         printf("    Status %u: %u\n", i, errors[i]);
