@@ -164,6 +164,133 @@ static const perf_metric_id_t g_server_metrics[] = {
     PROF_SERVER_GET2_COPY,
 };
 
+#define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
+
+typedef struct profile_tree_node {
+    perf_metric_id_t id;
+    const char *label;
+    const struct profile_tree_node *children;
+    size_t child_count;
+} profile_tree_node_t;
+
+typedef struct {
+    uint64_t count;
+    uint64_t total_ns;
+    uint64_t min_ns;
+    uint64_t max_ns;
+    uint64_t bytes;
+} metric_snapshot_t;
+
+static const profile_tree_node_t g_client_ack_alloc_children[] = {
+    {PROF_CLIENT_ACK_GET_QUEUE_WAIT, "get_queue_wait", NULL, 0},
+    {PROF_CLIENT_ACK_HEADER_SLOT_WAIT, "header_slot_wait", NULL, 0},
+    {PROF_CLIENT_ACK_DATA_SPACE_WAIT, "data_space_wait", NULL, 0},
+    {PROF_CLIENT_ACK_ACK_SPACE_WAIT, "ack_space_wait", NULL, 0},
+    {PROF_CLIENT_ACK_REPLICA_RESET, "replica_reset", NULL, 0},
+    {PROF_CLIENT_ACK_PROMISE_ALLOC, "promise_alloc", NULL, 0},
+    {PROF_CLIENT_ACK_SLOT_PREP, "slot_prep", NULL, 0},
+    {PROF_CLIENT_ACK_COMMIT, "commit", NULL, 0},
+};
+
+static const profile_tree_node_t g_client_put_total_children[] = {
+    {PROF_CLIENT_PUT_ACK_SLOT_ACQUIRE, "ack_slot_acquire", NULL, 0},
+    {PROF_CLIENT_PUT_HASH_BUF_ALLOC, "hash_buf_alloc", NULL, 0},
+    {PROF_CLIENT_PUT_COPY, "copy", NULL, 0},
+    {PROF_CLIENT_PUT_HASH, "hash", NULL, 0},
+    {PROF_CLIENT_PUT_SEND_HEADER, "send_header", NULL, 0},
+};
+
+static const profile_tree_node_t g_client_put_ack_poll_children[] = {
+    {PROF_CLIENT_PUT_ACK_POLL_SCAN, "scan", NULL, 0},
+    {PROF_CLIENT_PUT_ACK_POLL_TIMEOUT_CHECK, "timeout_check", NULL, 0},
+    {PROF_CLIENT_PUT_ACK_POLL_RESULT, "result", NULL, 0},
+};
+
+static const profile_tree_node_t g_client_get2_phase1_total_children[] = {
+    {PROF_CLIENT_GET2_ACK_SLOT_ACQUIRE, "ack_slot_acquire", NULL, 0},
+    {PROF_CLIENT_GET2_HASH_BUF_ALLOC, "hash_buf_alloc", NULL, 0},
+    {PROF_CLIENT_GET2_COPY, "copy", NULL, 0},
+    {PROF_CLIENT_GET2_HASH, "hash", NULL, 0},
+    {PROF_CLIENT_GET2_SEND_PHASE1, "send_phase1", NULL, 0},
+};
+
+static const profile_tree_node_t g_client_get2_ack_phase1_children[] = {
+    {PROF_CLIENT_GET2_ACK_PHASE1_TIMEOUT_CHECK, "timeout_check", NULL, 0},
+    {PROF_CLIENT_GET2_ACK_PHASE1_SCAN_ACKS, "scan_acks", NULL, 0},
+    {PROF_CLIENT_GET2_ACK_PHASE1_BUILD_CANDIDATES, "build_candidates", NULL, 0},
+    {PROF_CLIENT_GET2_ACK_PHASE1_FILTER_QUORUM, "filter_quorum", NULL, 0},
+    {PROF_CLIENT_GET2_ACK_PHASE1_FASTPATH_VERIFY, "fastpath_verify", NULL, 0},
+    {PROF_CLIENT_GET2_ACK_PHASE1_SHIP_PHASE2, "ship_phase2", NULL, 0},
+    {PROF_CLIENT_GET2_ACK_PHASE1_RESULT, "result", NULL, 0},
+};
+
+static const profile_tree_node_t g_client_get2_ack_phase2_children[] = {
+    {PROF_CLIENT_GET2_ACK_PHASE2_TIMEOUT_CHECK, "timeout_check", NULL, 0},
+    {PROF_CLIENT_GET2_ACK_PHASE2_VERIFY_AND_COPY, "verify_and_copy", NULL, 0},
+    {PROF_CLIENT_GET2_ACK_PHASE2_RESULT, "result", NULL, 0},
+};
+
+static const profile_tree_node_t g_client_get1_total_children[] = {
+    {PROF_CLIENT_GET1_KEY_HASH, "key_hash", NULL, 0},
+    {PROF_CLIENT_GET1_INDEX_FETCH_DISPATCH, "index_fetch_dispatch", NULL, 0},
+    {PROF_CLIENT_GET1_INDEX_CALLBACK, "index_callback", NULL, 0},
+    {PROF_CLIENT_GET1_PREFERRED_FETCH_CB, "preferred_fetch_cb", NULL, 0},
+    {PROF_CLIENT_GET1_CONTINGENCY_PREP, "contingency_prep", NULL, 0},
+    {PROF_CLIENT_GET1_CONTINGENCY_CB, "contingency_cb", NULL, 0},
+};
+
+static const profile_tree_node_t g_client_report_roots[] = {
+    {PROF_CLIENT_ACK_ALLOC_TOTAL, "client.ack.alloc_total", g_client_ack_alloc_children, ARRAY_LEN(g_client_ack_alloc_children)},
+    {PROF_CLIENT_PUT_TOTAL, "client.put.total", g_client_put_total_children, ARRAY_LEN(g_client_put_total_children)},
+    {PROF_CLIENT_PUT_ACK_POLL, "client.put.ack_poll", g_client_put_ack_poll_children, ARRAY_LEN(g_client_put_ack_poll_children)},
+    {PROF_CLIENT_GET2_PHASE1_TOTAL, "client.get2.phase1_total", g_client_get2_phase1_total_children, ARRAY_LEN(g_client_get2_phase1_total_children)},
+    {PROF_CLIENT_GET2_ACK_PHASE1_POLL, "client.get2.ack_phase1_poll", g_client_get2_ack_phase1_children, ARRAY_LEN(g_client_get2_ack_phase1_children)},
+    {PROF_CLIENT_GET2_ACK_PHASE2_POLL, "client.get2.ack_phase2_poll", g_client_get2_ack_phase2_children, ARRAY_LEN(g_client_get2_ack_phase2_children)},
+    {PROF_CLIENT_GET1_TOTAL, "client.get1.total", g_client_get1_total_children, ARRAY_LEN(g_client_get1_total_children)},
+    {PROF_CLIENT_SEND_HEADER, "client.send.header", NULL, 0},
+};
+
+static const profile_tree_node_t g_server_poll_slot_children[] = {
+    {PROF_SERVER_POLL_KEY_COPY, "key_copy", NULL, 0},
+    {PROF_SERVER_POLL_KEY_HASH, "key_hash", NULL, 0},
+};
+
+static const profile_tree_node_t g_server_put_total_children[] = {
+    {PROF_SERVER_PUT_READ_COPY, "read_copy", NULL, 0},
+    {PROF_SERVER_PUT_HASH_VERIFY, "hash_verify", NULL, 0},
+    {PROF_SERVER_PUT_INDEX_LOOKUP, "index_lookup", NULL, 0},
+    {PROF_SERVER_PUT_RETRY_INDEX_LOOKUP, "retry_index_lookup", NULL, 0},
+    {PROF_SERVER_PUT_FIND_FREE_INDEX_SLOT, "find_free_index_slot", NULL, 0},
+    {PROF_SERVER_PUT_ALLOC, "alloc", NULL, 0},
+    {PROF_SERVER_PUT_GC_ENQUEUE, "gc_enqueue", NULL, 0},
+    {PROF_SERVER_PUT_INSERT, "insert", NULL, 0},
+    {PROF_SERVER_PUT_MARK_HEADER_UNUSED, "mark_header_unused", NULL, 0},
+    {PROF_SERVER_PUT_ACK, "ack", NULL, 0},
+};
+
+static const profile_tree_node_t g_server_get1_copy_bucket_children[] = {
+    {PROF_SERVER_GET1_COPY_BUCKET_PLAIN, "plain", NULL, 0},
+    {PROF_SERVER_GET1_COPY_BUCKET_WRITEBACK_SCAN, "writeback_scan", NULL, 0},
+};
+
+static const profile_tree_node_t g_server_get1_ack_children[] = {
+    {PROF_SERVER_GET1_COPY_BUCKET, "copy_bucket", g_server_get1_copy_bucket_children, ARRAY_LEN(g_server_get1_copy_bucket_children)},
+    {PROF_SERVER_GET1_WRITEBACK_COPY, "writeback_copy", NULL, 0},
+    {PROF_SERVER_GET1_ACK_FINALIZE, "ack_finalize", NULL, 0},
+};
+
+static const profile_tree_node_t g_server_get2_ack_children[] = {
+    {PROF_SERVER_GET2_COPY, "copy", NULL, 0},
+};
+
+static const profile_tree_node_t g_server_report_roots[] = {
+    {PROF_SERVER_REQUESTS_PROCESSED, "server.requests_processed", NULL, 0},
+    {PROF_SERVER_POLL_SLOT_TOTAL, "server.poll.slot_total", g_server_poll_slot_children, ARRAY_LEN(g_server_poll_slot_children)},
+    {PROF_SERVER_PUT_TOTAL, "server.put.total", g_server_put_total_children, ARRAY_LEN(g_server_put_total_children)},
+    {PROF_SERVER_GET1_ACK_TOTAL, "server.get1.ack_total", g_server_get1_ack_children, ARRAY_LEN(g_server_get1_ack_children)},
+    {PROF_SERVER_GET2_ACK_TOTAL, "server.get2.ack_total", g_server_get2_ack_children, ARRAY_LEN(g_server_get2_ack_children)},
+};
+
 static void profile_reset_metric(perf_metric_id_t id) {
     atomic_store_explicit(&g_metrics[id].count, 0, memory_order_relaxed);
     atomic_store_explicit(&g_metrics[id].total_ns, 0, memory_order_relaxed);
@@ -252,56 +379,111 @@ void perf_reset_all(void) {
     }
 }
 
-static void print_metric_table(const char *title, const perf_metric_id_t *ids, size_t count) {
+static metric_snapshot_t snapshot_metric(perf_metric_id_t id) {
+    profile_metric_t *metric = &g_metrics[id];
+    metric_snapshot_t snapshot;
+
+    snapshot.count = atomic_load_explicit(&metric->count, memory_order_relaxed);
+    snapshot.total_ns = atomic_load_explicit(&metric->total_ns, memory_order_relaxed);
+    snapshot.min_ns = atomic_load_explicit(&metric->min_ns, memory_order_relaxed);
+    snapshot.max_ns = atomic_load_explicit(&metric->max_ns, memory_order_relaxed);
+    snapshot.bytes = atomic_load_explicit(&metric->bytes, memory_order_relaxed);
+
+    if (snapshot.min_ns == UINT64_MAX) {
+        snapshot.min_ns = 0;
+    }
+
+    return snapshot;
+}
+
+static void print_metric_row(const char *label, int depth, const metric_snapshot_t *metric, const metric_snapshot_t *parent) {
+    char full_label[96];
+    snprintf(full_label, sizeof(full_label), "%*s%s", depth * 2, "", label);
+
+    char parent_pct[16] = "-";
+    if (parent != NULL && parent->total_ns > 0) {
+        double pct = ((double) metric->total_ns * 100.0) / (double) parent->total_ns;
+        snprintf(parent_pct, sizeof(parent_pct), "%.2f", pct);
+    }
+
+    char bandwidth[16] = "-";
+    if (metric->bytes > 0 && metric->total_ns > 0) {
+        double mb_per_sec = ((double) metric->bytes * 1e3) / (double) metric->total_ns;
+        snprintf(bandwidth, sizeof(bandwidth), "%.2f", mb_per_sec);
+    }
+
+    double total_ms = (double) metric->total_ns / 1e6;
+    double avg_us = metric->count > 0 ? (double) metric->total_ns / (double) metric->count / 1e3 : 0.0;
+    double min_us = (double) metric->min_ns / 1e3;
+    double max_us = (double) metric->max_ns / 1e3;
+
+    printf("%-44s %10" PRIu64 " %12.3f %12.3f %12.3f %12.3f %10s %10s\n",
+           full_label,
+           metric->count,
+           total_ms,
+           avg_us,
+           min_us,
+           max_us,
+           parent_pct,
+           bandwidth);
+}
+
+static metric_snapshot_t print_tree_node(const profile_tree_node_t *node, const metric_snapshot_t *parent, int depth) {
+    metric_snapshot_t metric = snapshot_metric(node->id);
+    const char *label = node->label != NULL ? node->label : g_metric_names[node->id];
+    print_metric_row(label, depth, &metric, parent);
+
+    uint64_t child_total_ns = 0;
+    for (size_t i = 0; i < node->child_count; i++) {
+        metric_snapshot_t child = print_tree_node(&node->children[i], &metric, depth + 1);
+        child_total_ns += child.total_ns;
+    }
+
+    if (node->child_count > 0 && metric.count > 0) {
+        if (child_total_ns < metric.total_ns) {
+            metric_snapshot_t unattributed = {
+                .count = metric.count,
+                .total_ns = metric.total_ns - child_total_ns,
+                .min_ns = 0,
+                .max_ns = 0,
+                .bytes = 0
+            };
+            print_metric_row("[unattributed]", depth + 1, &unattributed, &metric);
+        } else if (child_total_ns > metric.total_ns) {
+            metric_snapshot_t overlap = {
+                .count = metric.count,
+                .total_ns = child_total_ns - metric.total_ns,
+                .min_ns = 0,
+                .max_ns = 0,
+                .bytes = 0
+            };
+            print_metric_row("[children_overlap]", depth + 1, &overlap, &metric);
+        }
+    }
+
+    return metric;
+}
+
+static void print_layered_report(const char *title, const profile_tree_node_t *roots, size_t root_count) {
     profile_ensure_initialized();
 
     printf("\n=== %s ===\n", title);
-    printf("%-32s %10s %12s %12s %12s %12s %12s\n",
+    printf("Rows are hierarchical; %%parent is this row's share of its parent's total time.\n");
+    printf("%-44s %10s %12s %12s %12s %12s %10s %10s\n",
            "metric",
            "count",
            "total ms",
            "avg us",
            "min us",
            "max us",
+           "%parent",
            "MB/s");
 
-    size_t rows_printed = 0;
-    for (size_t i = 0; i < count; i++) {
-        perf_metric_id_t id = ids[i];
-        profile_metric_t *metric = &g_metrics[id];
-        uint64_t sample_count = atomic_load_explicit(&metric->count, memory_order_relaxed);
-        if (sample_count == 0) {
-            continue;
+    for (size_t i = 0; i < root_count; i++) {
+        print_tree_node(&roots[i], NULL, 0);
+        if (i + 1 < root_count) {
+            printf("\n");
         }
-
-        rows_printed++;
-        uint64_t total_ns = atomic_load_explicit(&metric->total_ns, memory_order_relaxed);
-        uint64_t min_ns = atomic_load_explicit(&metric->min_ns, memory_order_relaxed);
-        uint64_t max_ns = atomic_load_explicit(&metric->max_ns, memory_order_relaxed);
-        uint64_t bytes = atomic_load_explicit(&metric->bytes, memory_order_relaxed);
-
-        if (min_ns == UINT64_MAX) {
-            min_ns = 0;
-        }
-
-        double total_ms = (double) total_ns / 1e6;
-        double avg_us = sample_count > 0 ? (double) total_ns / (double) sample_count / 1e3 : 0.0;
-        double min_us = (double) min_ns / 1e3;
-        double max_us = (double) max_ns / 1e3;
-        double mb_per_sec = total_ns > 0 ? ((double) bytes * 1e3) / (double) total_ns : 0.0;
-
-        printf("%-32s %10" PRIu64 " %12.3f %12.3f %12.3f %12.3f %12.3f\n",
-               g_metric_names[id],
-               sample_count,
-               total_ms,
-               avg_us,
-               min_us,
-               max_us,
-               mb_per_sec);
-    }
-
-    if (rows_printed == 0) {
-        printf("(no samples)\n");
     }
 }
 
@@ -312,11 +494,11 @@ static void reset_metric_group(const perf_metric_id_t *ids, size_t count) {
 }
 
 void perf_print_client_report(void) {
-    print_metric_table("Client Micro Profile", g_client_metrics, sizeof(g_client_metrics) / sizeof(g_client_metrics[0]));
+    print_layered_report("Client Micro Profile (Layered)", g_client_report_roots, ARRAY_LEN(g_client_report_roots));
 }
 
 void perf_print_server_report(bool reset_after_print) {
-    print_metric_table("Server Micro Profile", g_server_metrics, sizeof(g_server_metrics) / sizeof(g_server_metrics[0]));
+    print_layered_report("Server Micro Profile (Layered)", g_server_report_roots, ARRAY_LEN(g_server_report_roots));
     if (reset_after_print) {
         reset_metric_group(g_server_metrics, sizeof(g_server_metrics) / sizeof(g_server_metrics[0]));
     }
