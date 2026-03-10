@@ -76,7 +76,7 @@ static void do_experiment_zipf(request_promise_t *(promise_func)(const char *key
         ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec),
         (total_from_promise.tv_sec * 1000000000L) + total_from_promise.tv_nsec,
         (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES,
-        (total_from_promise.tv_sec * 1000000000L) + total_from_promise.tv_nsec/NUM_SAMPLES);
+        ((total_from_promise.tv_sec * 1000000000L) + total_from_promise.tv_nsec)/NUM_SAMPLES);
     for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
         printf("    Status %d: %d\n", i, errors[i]);
     }
@@ -123,7 +123,7 @@ static void do_experiment_uniform(request_promise_t *(promise_func)(unsigned cha
         ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec),
         (total_from_promise.tv_sec * 1000000000L) + total_from_promise.tv_nsec,
         (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES,
-        (total_from_promise.tv_sec * 1000000000L) + total_from_promise.tv_nsec/NUM_SAMPLES);
+        ((total_from_promise.tv_sec * 1000000000L) + total_from_promise.tv_nsec)/NUM_SAMPLES);
     for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
         printf("    Status %d: %d\n", i, errors[i]);
     }
