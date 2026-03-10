@@ -9,6 +9,9 @@ add_executable(client
         request_region_connection.h
         ack_region.c
         ack_region.h
+        profiler_metrics.h
+        profiler_report_layout.c
+        profiler_report_layout.h
         2_phase_2_sided.c
         2_phase_2_sided.h
         phase_2_queue.c

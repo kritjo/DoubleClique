@@ -22,6 +22,8 @@
 #include "garbage_collection_queue.h"
 #include "garbage_collection.h"
 #include "profiler.h"
+#include "profiler_metrics.h"
+#include "profiler_report_layout.h"
 
 static request_region_t *request_region;
 static struct buddy *buddy = NULL;
@@ -250,6 +252,10 @@ int request_region_poller(void *arg) {
     volatile replica_ack_t *replica_ack;
     sci_error_t sci_error;
     uint64_t last_report_ns = perf_now_ns();
+    size_t server_report_root_count = 0;
+    size_t server_metric_name_count = 0;
+    const perf_report_node_t *server_report_roots = server_profiler_report_roots(&server_report_root_count);
+    const char *const *server_metric_names = server_profiler_metric_names(&server_metric_name_count);
 
     //Enter main loop
     while (1) {
@@ -357,7 +363,12 @@ int request_region_poller(void *arg) {
 
         uint64_t now_ns = perf_now_ns();
         if (now_ns - last_report_ns >= 5000000000ULL) {
-            perf_print_server_report(true);
+            perf_print_report(server_profiler_report_title(),
+                              server_report_roots,
+                              server_report_root_count,
+                              server_metric_names,
+                              server_metric_name_count,
+                              true);
             last_report_ns = now_ns;
         }
     }

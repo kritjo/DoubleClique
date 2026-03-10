@@ -10,6 +10,7 @@
 #include "get_node_id.h"
 #include "avx_cpy.h"
 #include "profiler.h"
+#include "profiler_metrics.h"
 
 volatile request_region_t *request_region;
 sci_sequence_t request_sequence;

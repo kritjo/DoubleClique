@@ -10,6 +10,7 @@
 #include "phase_2_queue.h"
 #include "sequence.h"
 #include "profiler.h"
+#include "profiler_metrics.h"
 
 static void *phase2_thread(__attribute__((unused)) void *_args);
 

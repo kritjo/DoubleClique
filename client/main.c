@@ -19,6 +19,7 @@
 #include "ack_region.h"
 #include "2_phase_2_sided.h"
 #include "profiler.h"
+#include "profiler_report_layout.h"
 
 #define NUM_KEYS 13107
 #define THETA 0.99
@@ -487,8 +488,18 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    size_t client_report_root_count = 0;
+    size_t client_metric_name_count = 0;
+    const perf_report_node_t *client_report_roots = client_profiler_report_roots(&client_report_root_count);
+    const char *const *client_metric_names = client_profiler_metric_names(&client_metric_name_count);
+
     print_experiment_result_report();
-    perf_print_client_report();
+    perf_print_report(client_profiler_report_title(),
+                      client_report_roots,
+                      client_report_root_count,
+                      client_metric_names,
+                      client_metric_name_count,
+                      false);
     printf("\nCompleted!\n");
 
     free(cdf);

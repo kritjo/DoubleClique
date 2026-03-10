@@ -3,6 +3,9 @@ add_executable(server main.c
         request_region_thread.h
         request_region_utils.c
         request_region_utils.h
+        profiler_metrics.h
+        profiler_report_layout.c
+        profiler_report_layout.h
         garbage_collection.c
         garbage_collection.h
         garbage_collection_queue.c

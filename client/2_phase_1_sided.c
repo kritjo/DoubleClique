@@ -11,6 +11,7 @@
 
 #include "super_fast_hash.h"
 #include "profiler.h"
+#include "profiler_metrics.h"
 
 static sci_dma_queue_t replica_dma_queues_main[REPLICA_COUNT];
 static sci_dma_queue_t replica_dma_queues_secondary[REPLICA_COUNT];

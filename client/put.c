@@ -12,6 +12,7 @@
 #include "ack_region.h"
 #include "sequence.h"
 #include "profiler.h"
+#include "profiler_metrics.h"
 
 // wraparound version_number, large enough to avoid replay attacks
 static volatile _Atomic uint32_t version_number = 0;

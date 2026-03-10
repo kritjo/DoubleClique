@@ -9,6 +9,7 @@
 #include "2_phase_2_sided.h"
 #include "phase_2_queue.h"
 #include "profiler.h"
+#include "profiler_metrics.h"
 
 static pthread_mutex_t ack_mutex;
 
@@ -35,7 +36,7 @@ static void block_for_available_space(
     uint32_t oldest_offset,
     uint32_t *out_starting_offset,
     uint32_t region_space,
-    perf_metric_id_t wait_metric,
+    client_perf_metric_id_t wait_metric,
     uint64_t *out_total_ns
 );
 
@@ -311,7 +312,7 @@ static void block_for_available_space(
     uint32_t oldest_offset,
     uint32_t *out_starting_offset,
     uint32_t region_space,
-    perf_metric_id_t wait_metric,
+    client_perf_metric_id_t wait_metric,
     uint64_t *out_total_ns
 ) {
     uint64_t total_start_ns = perf_now_ns();
