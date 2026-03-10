@@ -64,5 +64,6 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
 void *ack_thread(__attribute__((unused)) void *_args);
 
 void insert_duration(request_promise_t *promise, struct timespec ts_pre, struct timespec ts_post);
+void insert_duration_end_now(request_promise_t *promise, struct timespec ts_pre);
 
 #endif //DOUBLECLIQUE_ACK_REGION_H

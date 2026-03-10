@@ -68,7 +68,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
 
     if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
         ack_slot->promise->result = PROMISE_TIMEOUT;
-        insert_duration_now(ack_slot->promise, ack_slot->start_time);
+        insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
         get_2_sided_decrement();
         return true;
     }
@@ -165,7 +165,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
             if (ack_count == REPLICA_COUNT) {
                 // If we have gotten replies from all replicas and can not find a quorum, it is an error
                 ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
-                insert_duration_now(ack_slot->promise, ack_slot->start_time);
+                insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
                 get_2_sided_decrement();
                 return true;
             } else {
@@ -208,7 +208,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
 
                         memcpy(ack_slot->promise->data, ack_data + key_len, value_len);
                         ack_slot->promise->result = PROMISE_SUCCESS_PH1;
-                        insert_duration_now(ack_slot->promise, ack_slot->start_time);
+                        insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
                         get_2_sided_decrement();
                         return true;
                     }
@@ -242,7 +242,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
          * requests. */
         if (shipped == 0) {
             ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
-            insert_duration_now(ack_slot->promise, ack_slot->start_time);
+            insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
             get_2_sided_decrement();
             return true;
         }
@@ -260,7 +260,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
 
     if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
         ack_slot->promise->result = PROMISE_TIMEOUT;
-        insert_duration_now(ack_slot->promise, ack_slot->start_time);
+        insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
         return true;
     }
 
@@ -272,7 +272,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     if (ack_slot->replica_ack_instances[0]->replica_ack_type != REPLICA_ACK_SUCCESS) {
         fprintf(stderr, "Unsupported ack state for phase2\n");
         ack_slot->promise->result = PROMISE_ERROR_TRANSFER;
-        insert_duration_now(ack_slot->promise, ack_slot->start_time);
+        insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
         return true;
     }
 
@@ -286,7 +286,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     if (hash != expected_hash) {
         //TODO: This seems like a bug, as we could have shipped multiple phase2 requests.
         ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
-        insert_duration_now(ack_slot->promise, ack_slot->start_time);
+        insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
         return true;
     }
 
@@ -299,7 +299,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     //TODO: No full key verification?
     memcpy(ack_slot->promise->data, ack_data + ack_slot->key_len, ack_slot->value_len);
     ack_slot->promise->result = PROMISE_SUCCESS;
-    insert_duration_now(ack_slot->promise, ack_slot->start_time);
+    insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
     return true;
 }
 

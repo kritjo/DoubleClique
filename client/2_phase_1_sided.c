@@ -333,7 +333,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
         }
     } else {
         pending_get_status.promise->result = PROMISE_ERROR_TRANSFER;
-        insert_duration_now(pending_get_status.promise, pending_get_status.start);
+        insert_duration_end_now(pending_get_status.promise, pending_get_status.start);
         return SCI_CALLBACK_CONTINUE;
     }
 
@@ -501,7 +501,7 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
         }
         memcpy(pending_get_status.promise->data, data_slot + args->key_len, data_length);
         pending_get_status.promise->result = PROMISE_SUCCESS;
-        insert_duration_now(pending_get_status.promise, pending_get_status.start);
+        insert_duration_end_now(pending_get_status.promise, pending_get_status.start);
 
     } else {
         contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key, args->key_hash, args->key_len);
@@ -606,7 +606,7 @@ contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_t
     if (found_contingency_candidates_count == 0) {
         // Did not find a quorum, fail the fetch
         pending_get_status.promise->result = PROMISE_ERROR_NO_MATCH;
-        insert_duration_now(pending_get_status.promise, pending_get_status.start);
+        insert_duration_end_now(pending_get_status.promise, pending_get_status.start);
         return;
     }
 
@@ -700,7 +700,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
 
         if (completed_contingency_fetches_count == args->found_contingency_candidates_count) {
             pending_get_status.promise->result = PROMISE_ERROR_TRANSFER;
-            insert_duration_now(pending_get_status.promise, pending_get_status.start);
+            insert_duration_end_now(pending_get_status.promise, pending_get_status.start);
         }
 
         return SCI_CALLBACK_CONTINUE;
@@ -720,7 +720,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
 
         if (payload_hash != expected_payload_hash) {
             pending_get_status.promise->result = PROMISE_ERROR_NO_MATCH;
-            insert_duration_now(pending_get_status.promise, pending_get_status.start);
+            insert_duration_end_now(pending_get_status.promise, pending_get_status.start);
             return SCI_CALLBACK_CONTINUE;
         }
 
@@ -731,7 +731,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         }
         memcpy(pending_get_status.promise->data, slot + args->index_entry.key_length, data_length);
         pending_get_status.promise->result = PROMISE_SUCCESS;
-        insert_duration_now(pending_get_status.promise, pending_get_status.start);
+        insert_duration_end_now(pending_get_status.promise, pending_get_status.start);
     } else {
         // No match, if we have received all set error, if not just fall through and let another thread handle it
         pthread_mutex_lock(&completed_contingency_fetches_mutex);
@@ -745,7 +745,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
 
         if (completed_contingency_fetches_count == args->found_contingency_candidates_count) {
             pending_get_status.promise->result = PROMISE_ERROR_NO_MATCH;
-            insert_duration_now(pending_get_status.promise, pending_get_status.start);
+            insert_duration_end_now(pending_get_status.promise, pending_get_status.start);
         }
     }
 
