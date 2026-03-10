@@ -106,6 +106,7 @@ bool consume_put_ack_slot(ack_slot_t *ack_slot) {
     if (ack_success_count >= (REPLICA_COUNT + 1) / 2) {
         // Success!
         ack_slot->promise->result = PROMISE_SUCCESS;
+        insert_duration_now(ack_slot->promise, ack_slot->start_time);
         return true;
     }
 
@@ -127,6 +128,7 @@ bool consume_put_ack_slot(ack_slot_t *ack_slot) {
 
         if (mix) {
             ack_slot->promise->result = PROMISE_ERROR_MIX;
+            insert_duration_now(ack_slot->promise, ack_slot->start_time);
             return true;
         }
 
@@ -148,6 +150,7 @@ bool consume_put_ack_slot(ack_slot_t *ack_slot) {
 
     if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= PUT_TIMEOUT_NS) {
         ack_slot->promise->result = PROMISE_TIMEOUT;
+        insert_duration_now(ack_slot->promise, ack_slot->start_time);
         return true;
     }
 

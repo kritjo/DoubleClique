@@ -39,6 +39,9 @@ static void do_experiment_zipf(request_promise_t *(promise_func)(const char *key
     request_promise_t *promises[NUM_SAMPLES];
     uint32_t errors[REQUEST_PROMISE_STATUS_COUNT] = {0};
     struct timespec start, end;
+    struct timespec total_from_promise;
+    total_from_promise.tv_nsec = 0;
+    total_from_promise.tv_sec = 0;
 
     // Clean sheet
     sleep(1);
@@ -59,9 +62,21 @@ static void do_experiment_zipf(request_promise_t *(promise_func)(const char *key
             }
         }
         errors[promises[i]->result]++;
+        total_from_promise.tv_sec += promises[i]->duration.tv_sec;
+        total_from_promise.tv_nsec += promises[i]->duration.tv_nsec;
+        if (total_from_promise.tv_nsec >= 1000000000L) {
+            total_from_promise.tv_sec += 1;
+            total_from_promise.tv_nsec -= 1000000000L;
+        }
         free(promises[i]);
     }
-    printf("%s with %d zipf samples took %ld ns. %ld ns/sample\n", experiment_name, NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec), (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
+    printf("%s with %d zipf samples took %ld(%ld) ns. %ld(%ld) ns/sample\n",
+        experiment_name,
+        NUM_SAMPLES,
+        ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec),
+        (total_from_promise.tv_sec * 1000000000L) + total_from_promise.tv_nsec,
+        (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES),
+        (total_from_promise.tv_sec * 1000000000L) + total_from_promise.tv_nsec/NUM_SAMPLES;
     for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
         printf("    Status %d: %d\n", i, errors[i]);
     }
@@ -71,6 +86,9 @@ static void do_experiment_uniform(request_promise_t *(promise_func)(unsigned cha
     request_promise_t *promises[NUM_SAMPLES];
     uint32_t errors[REQUEST_PROMISE_STATUS_COUNT] = {0};
     struct timespec start, end;
+    struct timespec total_from_promise;
+    total_from_promise.tv_nsec = 0;
+    total_from_promise.tv_sec = 0;
 
     // Clean sheet
     sleep(1);
@@ -91,9 +109,21 @@ static void do_experiment_uniform(request_promise_t *(promise_func)(unsigned cha
             }
         }
         errors[promises[i]->result]++;
+        total_from_promise.tv_sec += promises[i]->duration.tv_sec;
+        total_from_promise.tv_nsec += promises[i]->duration.tv_nsec;
+        if (total_from_promise.tv_nsec >= 1000000000L) {
+            total_from_promise.tv_sec += 1;
+            total_from_promise.tv_nsec -= 1000000000L;
+        }
         free(promises[i]);
     }
-    printf("%s with %d uniform samples took %ld ns. %ld ns/sample\n", experiment_name, NUM_SAMPLES, ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec), (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES);
+    printf("%s with %d uniform samples took %ld(%ld) ns. %ld(%ld) ns/sample\n",
+        experiment_name,
+        NUM_SAMPLES,
+        ((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec),
+        (total_from_promise.tv_sec * 1000000000L) + total_from_promise.tv_nsec,
+        (((end.tv_sec - start.tv_sec) * 1000000000L) + (end.tv_nsec - start.tv_nsec))/NUM_SAMPLES),
+        (total_from_promise.tv_sec * 1000000000L) + total_from_promise.tv_nsec/NUM_SAMPLES;
     for (uint32_t i = 0; i < REQUEST_PROMISE_STATUS_COUNT; i++) {
         printf("    Status %d: %d\n", i, errors[i]);
     }

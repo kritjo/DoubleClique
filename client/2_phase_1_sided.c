@@ -209,6 +209,7 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
     pending_get_status.promise->result = PROMISE_PENDING;
     pending_get_status.promise->data_len = 0;
     pending_get_status.promise->data = NULL;
+    clock_gettime(CLOCK_MONOTONIC, &pending_get_status.start);
 
     for (size_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
         stored_index_data[replica_index].completed = false;
@@ -245,20 +246,13 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
                     pio_read_thread,
                     args);
         }
-
-        // Only set on first iterations, otherwise we could race COMPLETED/POSTED
     }
 
-    // We could perhaps use waiting on a condition or sched_yield? Not sure how it would affect performance, but would
-    // save resources
-    struct timespec ts_pre;
     struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts_pre);
 
     while (pending_get_status.promise->result == PROMISE_PENDING) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
-        if (((ts.tv_sec - ts_pre.tv_sec) * 1000000000L + (ts.tv_nsec - ts_pre.tv_nsec)) > GET_TIMEOUT_1_SIDED_NS) {
+        if (((ts.tv_sec - pending_get_status.start.tv_sec) * 1000000000L + (ts.tv_nsec - pending_get_status.start.tv_nsec)) > GET_TIMEOUT_1_SIDED_NS) {
             // Timeout!
             for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
                 // Abort all pending DMA operations
@@ -267,11 +261,14 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
                          replica_dma_queues_main[replica_index],
                          NO_FLAGS);
                 else {
+                    // Todo: should probably cancel this instead of joining?
                     pthread_join(thread_ids[replica_index], NULL);
                 }
             }
 
             pending_get_status.promise->result = PROMISE_TIMEOUT;
+            insert_duration(pending_get_status.promise, pending_get_status.start, ts);
+
             pthread_mutex_unlock(&get_in_progress);
 
             return pending_get_status.promise;
@@ -336,6 +333,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
         }
     } else {
         pending_get_status.promise->result = PROMISE_ERROR_TRANSFER;
+        insert_duration_now(pending_get_status.promise, pending_get_status.start);
         return SCI_CALLBACK_CONTINUE;
     }
 
@@ -503,6 +501,7 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
         }
         memcpy(pending_get_status.promise->data, data_slot + args->key_len, data_length);
         pending_get_status.promise->result = PROMISE_SUCCESS;
+        insert_duration_now(pending_get_status.promise, pending_get_status.start);
 
     } else {
         contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key, args->key_hash, args->key_len);
@@ -607,6 +606,7 @@ contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_t
     if (found_contingency_candidates_count == 0) {
         // Did not find a quorum, fail the fetch
         pending_get_status.promise->result = PROMISE_ERROR_NO_MATCH;
+        insert_duration_now(pending_get_status.promise, pending_get_status.start);
         return;
     }
 
@@ -700,6 +700,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
 
         if (completed_contingency_fetches_count == args->found_contingency_candidates_count) {
             pending_get_status.promise->result = PROMISE_ERROR_TRANSFER;
+            insert_duration_now(pending_get_status.promise, pending_get_status.start);
         }
 
         return SCI_CALLBACK_CONTINUE;
@@ -719,6 +720,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
 
         if (payload_hash != expected_payload_hash) {
             pending_get_status.promise->result = PROMISE_ERROR_NO_MATCH;
+            insert_duration_now(pending_get_status.promise, pending_get_status.start);
             return SCI_CALLBACK_CONTINUE;
         }
 
@@ -729,6 +731,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         }
         memcpy(pending_get_status.promise->data, slot + args->index_entry.key_length, data_length);
         pending_get_status.promise->result = PROMISE_SUCCESS;
+        insert_duration_now(pending_get_status.promise, pending_get_status.start);
     } else {
         // No match, if we have received all set error, if not just fall through and let another thread handle it
         pthread_mutex_lock(&completed_contingency_fetches_mutex);
@@ -742,6 +745,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
 
         if (completed_contingency_fetches_count == args->found_contingency_candidates_count) {
             pending_get_status.promise->result = PROMISE_ERROR_NO_MATCH;
+            insert_duration_now(pending_get_status.promise, pending_get_status.start);
         }
     }
 

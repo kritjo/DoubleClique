@@ -26,6 +26,7 @@ typedef struct {
     _Atomic enum request_operation operation;
     _Atomic uint32_t data_len;
     _Atomic(void *) data;
+    _Atomic struct timespec duration;
 } request_promise_t;
 
 
@@ -61,5 +62,7 @@ void init_ack_region(sci_desc_t sd);
 ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_len, uint32_t value_len, uint32_t header_data_length, uint32_t ack_data_length, uint32_t version_number, request_promise_t *promise);
 
 void *ack_thread(__attribute__((unused)) void *_args);
+
+void insert_duration(request_promise_t *promise, struct timespec ts_pre, struct timespec ts_post);
 
 #endif //DOUBLECLIQUE_ACK_REGION_H

@@ -108,8 +108,6 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
                 replica_ack_instance->version_number = 0;
             }
 
-            clock_gettime(CLOCK_MONOTONIC, &ack_slot->start_time);
-
             if (promise == NULL) {
                 promise = malloc(sizeof(request_promise_t));
                 if (promise == NULL) {
@@ -147,6 +145,8 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
 
             block_for_available_space(ack_data_length, &free_ack_offset, oldest_ack_offset, &ack_slot->starting_ack_data_offset, ACK_REGION_DATA_SIZE);
             ack_slot->ack_data_size = ack_data_length;
+
+            clock_gettime(CLOCK_MONOTONIC, &ack_slot->start_time);
 
             free_header_slot = (free_header_slot + 1) % REQUEST_SLOTS;
         }
@@ -224,4 +224,19 @@ static void block_for_available_space(uint32_t required_space, uint32_t *free_of
 
         _mm_pause();
     }
+}
+
+void insert_duration(request_promise_t *promise, struct timespec ts_pre, struct timespec ts_post) {
+    promise->duration.tv_sec = ts_post.tv_sec - ts_pre.tv_sec;
+    promise->duration.tv_nsec = ts_post.tv_nsec - ts_pre.tv_nsec;
+    if (promise->duration.tv_nsec < 0) {
+        promise->duration.tv_sec -= 1;
+        promise->duration.tv_nsec += 1000000000L;
+    }
+}
+
+void insert_duration_end_now(request_promise_t *promise, struct timespec ts_pre) {
+    struct timespec ts_post;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    insert_duration(promise, ts_pre, ts_post);
 }
