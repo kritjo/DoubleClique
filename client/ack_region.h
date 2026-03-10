@@ -26,7 +26,7 @@ typedef struct {
     _Atomic enum request_operation operation;
     _Atomic uint32_t data_len;
     _Atomic(void *) data;
-    _Atomic(struct timespec) duration;
+    struct timespec duration;
 } request_promise_t;
 
 
