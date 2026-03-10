@@ -3,9 +3,15 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <pthread.h>
+#include <stdlib.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <time.h>
+#include <x86intrin.h>
+
+#if !defined(__x86_64__) && !defined(__i386__)
+#error "DoubleClique profiler requires x86/x86_64 (RDTSCP backend)"
+#endif
 
 typedef struct {
     _Atomic uint64_t count;
@@ -17,6 +23,12 @@ typedef struct {
 
 static profile_metric_t g_metrics[PROF_METRIC_COUNT];
 static pthread_once_t g_profile_once = PTHREAD_ONCE_INIT;
+
+static double g_timer_ns_per_cycle = 0.0;
+static uint64_t g_timer_base_cycles = 0;
+static uint64_t g_timer_base_ns = 0;
+static double g_timer_read_overhead_ns = 0.0;
+static double g_timer_pair_overhead_ns = 0.0;
 
 static const char *const g_metric_names[PROF_METRIC_COUNT] = {
     [PROF_CLIENT_ACK_GET_QUEUE_WAIT] = "client.ack.get_queue_wait",
@@ -363,6 +375,108 @@ static const profile_tree_node_t g_server_report_roots[] = {
     {PROF_SERVER_GET2_ACK_TOTAL, "server.get2.ack_total", g_server_get2_ack_children, ARRAY_LEN(g_server_get2_ack_children)},
 };
 
+static uint64_t monotonic_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
+}
+
+static inline uint64_t rdtscp_cycles(void) {
+    unsigned int aux;
+    return (uint64_t) __rdtscp(&aux);
+}
+
+static int compare_double_asc(const void *lhs, const void *rhs) {
+    double a = *(const double *) lhs;
+    double b = *(const double *) rhs;
+    if (a < b) {
+        return -1;
+    }
+    if (a > b) {
+        return 1;
+    }
+    return 0;
+}
+
+static void calibrate_rdtscp_to_ns(void) {
+    enum {
+        CALIBRATION_SAMPLES = 15,
+        CALIBRATION_WINDOW_NS = 5 * 1000 * 1000
+    };
+
+    double ns_per_cycle_samples[CALIBRATION_SAMPLES];
+
+    for (size_t i = 0; i < CALIBRATION_SAMPLES; i++) {
+        uint64_t wall_start_ns = monotonic_now_ns();
+        uint64_t cycle_start = rdtscp_cycles();
+        uint64_t wall_now_ns = wall_start_ns;
+
+        while (wall_now_ns - wall_start_ns < CALIBRATION_WINDOW_NS) {
+            wall_now_ns = monotonic_now_ns();
+        }
+
+        uint64_t cycle_end = rdtscp_cycles();
+        uint64_t wall_end_ns = monotonic_now_ns();
+        uint64_t elapsed_cycles = cycle_end - cycle_start;
+        uint64_t elapsed_ns = wall_end_ns - wall_start_ns;
+
+        if (elapsed_cycles == 0 || elapsed_ns == 0) {
+            fprintf(stderr, "RDTSCP calibration failed: zero elapsed interval\n");
+            exit(EXIT_FAILURE);
+        }
+
+        ns_per_cycle_samples[i] = (double) elapsed_ns / (double) elapsed_cycles;
+    }
+
+    qsort(ns_per_cycle_samples,
+          CALIBRATION_SAMPLES,
+          sizeof(ns_per_cycle_samples[0]),
+          compare_double_asc);
+
+    g_timer_ns_per_cycle = ns_per_cycle_samples[CALIBRATION_SAMPLES / 2];
+    if (!(g_timer_ns_per_cycle > 0.0)) {
+        fprintf(stderr, "RDTSCP calibration failed: invalid ns/cycle factor\n");
+        exit(EXIT_FAILURE);
+    }
+    g_timer_base_cycles = rdtscp_cycles();
+    g_timer_base_ns = monotonic_now_ns();
+}
+
+static void measure_rdtscp_overhead(void) {
+    enum {
+        OVERHEAD_SAMPLES = 4096
+    };
+
+    uint64_t min_single_cycles = UINT64_MAX;
+    uint64_t min_pair_cycles = UINT64_MAX;
+
+    for (size_t i = 0; i < OVERHEAD_SAMPLES; i++) {
+        uint64_t c0 = rdtscp_cycles();
+        uint64_t c1 = rdtscp_cycles();
+        uint64_t c2 = rdtscp_cycles();
+
+        uint64_t single_cycles = c1 - c0;
+        uint64_t pair_cycles = c2 - c0;
+
+        if (single_cycles < min_single_cycles) {
+            min_single_cycles = single_cycles;
+        }
+        if (pair_cycles < min_pair_cycles) {
+            min_pair_cycles = pair_cycles;
+        }
+    }
+
+    g_timer_read_overhead_ns = (double) min_single_cycles * g_timer_ns_per_cycle;
+    g_timer_pair_overhead_ns = (double) min_pair_cycles * g_timer_ns_per_cycle;
+}
+
+static uint64_t rdtscp_now_ns(void) {
+    uint64_t cycle_now = rdtscp_cycles();
+    uint64_t elapsed_cycles = cycle_now - g_timer_base_cycles;
+    double elapsed_ns = (double) elapsed_cycles * g_timer_ns_per_cycle;
+    return g_timer_base_ns + (uint64_t) elapsed_ns;
+}
+
 static void profile_reset_metric(perf_metric_id_t id) {
     atomic_store_explicit(&g_metrics[id].count, 0, memory_order_relaxed);
     atomic_store_explicit(&g_metrics[id].total_ns, 0, memory_order_relaxed);
@@ -372,6 +486,9 @@ static void profile_reset_metric(perf_metric_id_t id) {
 }
 
 static void profile_init(void) {
+    calibrate_rdtscp_to_ns();
+    measure_rdtscp_overhead();
+
     for (size_t i = 0; i < PROF_METRIC_COUNT; i++) {
         profile_reset_metric((perf_metric_id_t) i);
     }
@@ -420,9 +537,8 @@ static void profile_record_impl(perf_metric_id_t id, uint64_t duration_ns, uint6
 }
 
 uint64_t perf_now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
+    profile_ensure_initialized();
+    return rdtscp_now_ns();
 }
 
 void perf_record_ns(perf_metric_id_t id, uint64_t duration_ns) {
@@ -540,6 +656,10 @@ static void print_layered_report(const char *title, const profile_tree_node_t *r
     profile_ensure_initialized();
 
     printf("\n=== %s ===\n", title);
+    printf("Timer backend: rdtscp_calibrated_ns (x86-only)\n");
+    printf("Timer metrics: rdtscp_read_ns=%.2f rdtscp_pair_ns=%.2f. Tiny-span averages near this floor are timer-dominated.\n",
+           g_timer_read_overhead_ns,
+           g_timer_pair_overhead_ns);
     printf("Rows are hierarchical; %%parent is this row's share of its parent's total time.\n");
     printf("%-44s %10s %12s %12s %12s %12s %10s %10s\n",
            "metric",
