@@ -7,6 +7,7 @@
 #include <sched.h>
 #include <math.h>
 #include <string.h>
+#include <inttypes.h>
 
 #include "sisci_glob_defs.h"
 
