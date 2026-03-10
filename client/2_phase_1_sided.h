@@ -40,7 +40,7 @@ typedef struct {
 typedef struct {
     _Atomic bool contingency_fetch_started;
     _Atomic (request_promise_t *) promise;
-    _Atomic struct timespec start;
+    struct timespec start;
 } pending_get_status_t;
 
 typedef struct {
