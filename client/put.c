@@ -11,6 +11,7 @@
 #include "request_region_connection.h"
 #include "ack_region.h"
 #include "sequence.h"
+#include "profiler.h"
 
 // wraparound version_number, large enough to avoid replay attacks
 static volatile _Atomic uint32_t version_number = 0;
@@ -27,6 +28,7 @@ void init_put(void) {
 }
 
 request_promise_t *put_blocking_until_available_put_request_region_slot(const char *key, uint8_t key_len, void *value, uint32_t value_len) {
+    uint64_t put_total_start_ns = perf_now_ns();
     if (key_len + value_len > REQUEST_REGION_DATA_SIZE) {
         fprintf(stderr, "illegally large data\n");
         exit(EXIT_FAILURE);
@@ -47,6 +49,8 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
         exit(EXIT_FAILURE);
     }
 
+    uint64_t copy_start_ns = perf_now_ns();
+
     // First copy the key
     for (uint32_t i = 0; i < key_len; i++) {
         hash_data[i] = key[i];
@@ -63,9 +67,20 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
 
     // Copy version number into the first 4 bytes of hash_data
     memcpy(hash_data + key_len + value_len, &ack_slot->version_number, sizeof(((header_slot_t *) 0)->version_number));
+    perf_record_ns_bytes(
+        PROF_CLIENT_PUT_COPY,
+        perf_now_ns() - copy_start_ns,
+        (uint64_t) key_len + value_len
+    );
 
+    uint64_t hash_start_ns = perf_now_ns();
     uint32_t payload_hash = super_fast_hash(hash_data,
                                             (uint32_t) (key_len + value_len + sizeof(((header_slot_t *) 0)->version_number)));
+    perf_record_ns_bytes(
+        PROF_CLIENT_PUT_HASH,
+        perf_now_ns() - hash_start_ns,
+        (uint64_t) key_len + value_len + sizeof(((header_slot_t *) 0)->version_number)
+    );
     free(hash_data);
 
     send_request_region_slot(
@@ -80,10 +95,12 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
         HEADER_SLOT_USED_PUT
     );
 
+    perf_record_ns(PROF_CLIENT_PUT_TOTAL, perf_now_ns() - put_total_start_ns);
     return ack_slot->promise;
 }
 
 bool consume_put_ack_slot(ack_slot_t *ack_slot) {
+    uint64_t poll_start_ns = perf_now_ns();
     uint32_t ack_success_count = 0;
     uint32_t ack_count = 0;
     for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
@@ -107,6 +124,7 @@ bool consume_put_ack_slot(ack_slot_t *ack_slot) {
         // Success!
         ack_slot->promise->result = PROMISE_SUCCESS;
         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
+        perf_record_ns(PROF_CLIENT_PUT_ACK_POLL, perf_now_ns() - poll_start_ns);
         return true;
     }
 
@@ -129,12 +147,14 @@ bool consume_put_ack_slot(ack_slot_t *ack_slot) {
         if (mix) {
             ack_slot->promise->result = PROMISE_ERROR_MIX;
             insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
+            perf_record_ns(PROF_CLIENT_PUT_ACK_POLL, perf_now_ns() - poll_start_ns);
             return true;
         }
 
         switch (replica_ack_type) {
             case REPLICA_ACK_ERROR_OUT_OF_SPACE:
                 ack_slot->promise->result = PROMISE_ERROR_OUT_OF_SPACE;
+                perf_record_ns(PROF_CLIENT_PUT_ACK_POLL, perf_now_ns() - poll_start_ns);
                 return true;
             case REPLICA_ACK_SUCCESS:
             case REPLICA_NOT_ACKED:
@@ -151,8 +171,10 @@ bool consume_put_ack_slot(ack_slot_t *ack_slot) {
     if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= PUT_TIMEOUT_NS) {
         ack_slot->promise->result = PROMISE_TIMEOUT;
         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
+        perf_record_ns(PROF_CLIENT_PUT_ACK_POLL, perf_now_ns() - poll_start_ns);
         return true;
     }
 
+    perf_record_ns(PROF_CLIENT_PUT_ACK_POLL, perf_now_ns() - poll_start_ns);
     return false;
 }

@@ -8,6 +8,7 @@
 #include "put.h"
 #include "2_phase_2_sided.h"
 #include "phase_2_queue.h"
+#include "profiler.h"
 
 static pthread_mutex_t ack_mutex;
 
@@ -28,7 +29,7 @@ ack_slot_t ack_slots[REQUEST_SLOTS];
 sci_local_segment_t ack_segment;
 sci_map_t ack_map;
 
-static void block_for_available_space(uint32_t required_space, uint32_t *free_offset, uint32_t oldest_offset, uint32_t *out_starting_offset, uint32_t region_space);
+static void block_for_available_space(uint32_t required_space, uint32_t *free_offset, uint32_t oldest_offset, uint32_t *out_starting_offset, uint32_t region_space, perf_metric_id_t wait_metric);
 
 void init_ack_region(sci_desc_t sd) {
     sci_error_t sci_error;
@@ -71,7 +72,9 @@ void init_ack_region(sci_desc_t sd) {
 
 // Critical region function
 ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_len, uint32_t value_len, uint32_t header_data_length, uint32_t ack_data_length, uint32_t version_number, request_promise_t *promise) {
+    uint64_t alloc_start_ns = perf_now_ns();
     if (request_type == GET_PHASE1) {
+        uint64_t queue_wait_start_ns = perf_now_ns();
         bool available_get_queue_space = false;
         while (1) {
             pthread_mutex_lock(&ack_mutex);
@@ -85,13 +88,19 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
             }
             _mm_pause();
         }
+        perf_record_ns(PROF_CLIENT_ACK_GET_QUEUE_WAIT, perf_now_ns() - queue_wait_start_ns);
     }
 
     bool available_slot = false;
     ack_slot_t *ack_slot;
+    uint64_t header_wait_ns = 0;
     while (!available_slot) {
         if ((free_header_slot + 1) % REQUEST_SLOTS == oldest_header_slot) {
-            _mm_pause();
+            uint64_t wait_start_ns = perf_now_ns();
+            while ((free_header_slot + 1) % REQUEST_SLOTS == oldest_header_slot) {
+                _mm_pause();
+            }
+            header_wait_ns += perf_now_ns() - wait_start_ns;
             continue;
         }
 
@@ -140,10 +149,24 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
             ack_slot->version_number = version_number;
 
             // Wait for enough space
-            block_for_available_space(header_data_length, &free_data_offset, oldest_data_offset, &ack_slot->starting_data_offset, REQUEST_REGION_DATA_SIZE);
+            block_for_available_space(
+                header_data_length,
+                &free_data_offset,
+                oldest_data_offset,
+                &ack_slot->starting_data_offset,
+                REQUEST_REGION_DATA_SIZE,
+                PROF_CLIENT_ACK_DATA_SPACE_WAIT
+            );
             ack_slot->data_size = header_data_length;
 
-            block_for_available_space(ack_data_length, &free_ack_offset, oldest_ack_offset, &ack_slot->starting_ack_data_offset, ACK_REGION_DATA_SIZE);
+            block_for_available_space(
+                ack_data_length,
+                &free_ack_offset,
+                oldest_ack_offset,
+                &ack_slot->starting_ack_data_offset,
+                ACK_REGION_DATA_SIZE,
+                PROF_CLIENT_ACK_ACK_SPACE_WAIT
+            );
             ack_slot->ack_data_size = ack_data_length;
 
             clock_gettime(CLOCK_MONOTONIC, &ack_slot->start_time);
@@ -156,6 +179,9 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
             _mm_pause();
         }
     }
+
+    perf_record_ns(PROF_CLIENT_ACK_HEADER_SLOT_WAIT, header_wait_ns);
+    perf_record_ns(PROF_CLIENT_ACK_ALLOC_TOTAL, perf_now_ns() - alloc_start_ns);
 
     return ack_slot;
 }
@@ -209,7 +235,10 @@ void *ack_thread(__attribute__((unused)) void *_args) {
     return NULL;
 }
 
-static void block_for_available_space(uint32_t required_space, uint32_t *free_offset, uint32_t oldest_offset, uint32_t *out_starting_offset, uint32_t region_space) {
+static void block_for_available_space(uint32_t required_space, uint32_t *free_offset, uint32_t oldest_offset, uint32_t *out_starting_offset, uint32_t region_space, perf_metric_id_t wait_metric) {
+    uint64_t wait_ns = 0;
+    bool is_waiting = false;
+    uint64_t wait_start_ns = 0;
     bool available_space = false;
     while (1) {
         uint32_t used = (*free_offset + region_space
@@ -220,14 +249,23 @@ static void block_for_available_space(uint32_t required_space, uint32_t *free_of
         available_space = free_space >= (required_space);
 
         if (available_space) {
+            if (is_waiting) {
+                wait_ns += perf_now_ns() - wait_start_ns;
+            }
             // There's enough space
             *out_starting_offset = *free_offset;
             *free_offset = (*free_offset + required_space) % region_space;
             break;
         }
 
+        if (!is_waiting) {
+            wait_start_ns = perf_now_ns();
+            is_waiting = true;
+        }
         _mm_pause();
     }
+
+    perf_record_ns(wait_metric, wait_ns);
 }
 
 void insert_duration(request_promise_t *promise, struct timespec ts_pre, struct timespec ts_post) {

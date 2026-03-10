@@ -18,6 +18,8 @@ add_library(commonLib STATIC
         sequence.h
         avx_cpy.c
         avx_cpy.h
+        profiler.c
+        profiler.h
 )
 
 target_include_directories(commonLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

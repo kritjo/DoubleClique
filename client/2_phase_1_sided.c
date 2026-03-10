@@ -10,6 +10,7 @@
 #include "index_data_protocol.h"
 
 #include "super_fast_hash.h"
+#include "profiler.h"
 
 static sci_dma_queue_t replica_dma_queues_main[REPLICA_COUNT];
 static sci_dma_queue_t replica_dma_queues_secondary[REPLICA_COUNT];
@@ -183,13 +184,16 @@ void init_2_phase_1_sided_get(sci_desc_t sd, uint8_t *replica_node_ids, bool use
 // You need to free the data even though there is an error and data length is 0
 // Invariant: all dma queues is postable
 request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
+    uint64_t total_start_ns = perf_now_ns();
     pthread_mutex_lock(&get_in_progress);
     pending_get_status.contingency_fetch_started = false;
 
     pthread_t thread_ids[REPLICA_COUNT];
 
     // First we need to get the hash of the key
+    uint64_t key_hash_start_ns = perf_now_ns();
     uint32_t key_hash = super_fast_hash(key, (uint32_t) key_len);
+    perf_record_ns_bytes(PROF_CLIENT_GET1_KEY_HASH, perf_now_ns() - key_hash_start_ns, key_len);
 
     // Now we need to read index buckets from the replicas this should be done asynchronously preferably, so that
     // we can get the data slot from the one that answers first
@@ -211,6 +215,7 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
     pending_get_status.promise->data = NULL;
     clock_gettime(CLOCK_MONOTONIC, &pending_get_status.start);
 
+    uint64_t dispatch_start_ns = perf_now_ns();
     for (size_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
         stored_index_data[replica_index].completed = false;
 
@@ -247,6 +252,7 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
                     args);
         }
     }
+    perf_record_ns(PROF_CLIENT_GET1_INDEX_FETCH_DISPATCH, perf_now_ns() - dispatch_start_ns);
 
     struct timespec ts;
 
@@ -270,7 +276,7 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
             insert_duration(pending_get_status.promise, pending_get_status.start, ts);
 
             pthread_mutex_unlock(&get_in_progress);
-
+            perf_record_ns(PROF_CLIENT_GET1_TOTAL, perf_now_ns() - total_start_ns);
             return pending_get_status.promise;
         }
     }
@@ -291,6 +297,7 @@ request_promise_t *get_2_phase_1_sided(const char *key, uint8_t key_len) {
     }
 
     pthread_mutex_unlock(&get_in_progress);
+    perf_record_ns(PROF_CLIENT_GET1_TOTAL, perf_now_ns() - total_start_ns);
     return pending_get_status.promise;
 }
 
@@ -311,6 +318,7 @@ static void *pio_read_thread(void *arg) {
 }
 
 sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__((unused)) sci_dma_queue_t _queue, sci_error_t status) {
+    uint64_t callback_start_ns = perf_now_ns();
     get_index_response_args_t *args = ((get_index_response_args_t *) arg);
     size_t replica_index = args->replica_index;
     uint32_t key_hash = args->key_hash;
@@ -334,6 +342,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
     } else {
         pending_get_status.promise->result = PROMISE_ERROR_TRANSFER;
         insert_duration_end_now(pending_get_status.promise, pending_get_status.start);
+        perf_record_ns(PROF_CLIENT_GET1_INDEX_CALLBACK, perf_now_ns() - callback_start_ns);
         return SCI_CALLBACK_CONTINUE;
     }
 
@@ -364,6 +373,7 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
             // contingency fetch. This will also mean that we try another backend, as this replica does not have any
             // candidates
             contingency_backend_fetch(NULL, 0, args->key, args->key_hash, args->key_len);
+            perf_record_ns(PROF_CLIENT_GET1_INDEX_CALLBACK, perf_now_ns() - callback_start_ns);
             return SCI_CALLBACK_CONTINUE;
         }
 
@@ -410,18 +420,21 @@ sci_callback_action_t index_fetch_completed_callback(void IN *arg, __attribute__
         pthread_mutex_unlock(&completed_index_fetches_mutex);
     }
 
+    perf_record_ns(PROF_CLIENT_GET1_INDEX_CALLBACK, perf_now_ns() - callback_start_ns);
     return SCI_CALLBACK_CONTINUE;
 }
 
 sci_callback_action_t
 preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sci_dma_queue_t _queue,
                                         sci_error_t status) {
+    uint64_t callback_start_ns = perf_now_ns();
     get_data_response_args_t *args = (get_data_response_args_t *) arg;
 
     uint32_t tried_vnrs[INDEX_SLOTS_PR_BUCKET];
 
     if (status != SCI_ERR_OK) {
         contingency_backend_fetch(NULL, 0, args->key, args->key_hash, args->key_len);
+        perf_record_ns(PROF_CLIENT_GET1_PREFERRED_FETCH_CB, perf_now_ns() - callback_start_ns);
         return SCI_CALLBACK_CONTINUE;
     }
 
@@ -447,6 +460,7 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
 
     if (version_number == -1) {
         contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key, args->key_hash, args->key_len);
+        perf_record_ns(PROF_CLIENT_GET1_PREFERRED_FETCH_CB, perf_now_ns() - callback_start_ns);
         return SCI_CALLBACK_CONTINUE;
     }
 
@@ -491,6 +505,7 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
 
         if (payload_hash != expected_payload_hash) {
             contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key, args->key_hash, args->key_len);
+            perf_record_ns(PROF_CLIENT_GET1_PREFERRED_FETCH_CB, perf_now_ns() - callback_start_ns);
             return SCI_CALLBACK_CONTINUE;
         }
 
@@ -507,12 +522,14 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
         contingency_backend_fetch(tried_vnrs, tried_vnr_count, args->key, args->key_hash, args->key_len);
     }
 
+    perf_record_ns(PROF_CLIENT_GET1_PREFERRED_FETCH_CB, perf_now_ns() - callback_start_ns);
     return SCI_CALLBACK_CONTINUE;
 }
 
 static void
 contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_tried_vnr_count, const char *key,
                           uint32_t key_hash, uint32_t key_length) {
+    uint64_t prep_start_ns = perf_now_ns();
     if (pending_get_status.contingency_fetch_started) {
         // Contingency backend fetch already in progress
         fprintf(stderr, "Can not have multiple contingency fetches at once.\n");
@@ -607,6 +624,7 @@ contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_t
         // Did not find a quorum, fail the fetch
         pending_get_status.promise->result = PROMISE_ERROR_NO_MATCH;
         insert_duration_end_now(pending_get_status.promise, pending_get_status.start);
+        perf_record_ns(PROF_CLIENT_GET1_CONTINGENCY_PREP, perf_now_ns() - prep_start_ns);
         return;
     }
 
@@ -675,11 +693,14 @@ contingency_backend_fetch(const uint32_t already_tried_vnr[], uint32_t already_t
             break;
         }
     }
+
+    perf_record_ns(PROF_CLIENT_GET1_CONTINGENCY_PREP, perf_now_ns() - prep_start_ns);
 }
 
 sci_callback_action_t
 contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sci_dma_queue_t _queue,
                                           sci_error_t status) {
+    uint64_t callback_start_ns = perf_now_ns();
     contingency_fetch_completed_args_t *args = (contingency_fetch_completed_args_t *) arg;
 
     pthread_mutex_lock(&completed_contingency_fetches_mutex);
@@ -703,6 +724,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
             insert_duration_end_now(pending_get_status.promise, pending_get_status.start);
         }
 
+        perf_record_ns(PROF_CLIENT_GET1_CONTINGENCY_CB, perf_now_ns() - callback_start_ns);
         return SCI_CALLBACK_CONTINUE;
     }
 
@@ -721,6 +743,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         if (payload_hash != expected_payload_hash) {
             pending_get_status.promise->result = PROMISE_ERROR_NO_MATCH;
             insert_duration_end_now(pending_get_status.promise, pending_get_status.start);
+            perf_record_ns(PROF_CLIENT_GET1_CONTINGENCY_CB, perf_now_ns() - callback_start_ns);
             return SCI_CALLBACK_CONTINUE;
         }
 
@@ -749,5 +772,6 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
         }
     }
 
+    perf_record_ns(PROF_CLIENT_GET1_CONTINGENCY_CB, perf_now_ns() - callback_start_ns);
     return SCI_CALLBACK_CONTINUE;
 }

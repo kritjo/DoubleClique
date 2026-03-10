@@ -9,6 +9,7 @@
 #include "2_phase_1_sided.h"
 #include "phase_2_queue.h"
 #include "sequence.h"
+#include "profiler.h"
 
 static void *phase2_thread(__attribute__((unused)) void *_args);
 
@@ -19,6 +20,7 @@ void init_2_phase_2_sided_get(void) {
 }
 
 request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
+    uint64_t total_start_ns = perf_now_ns();
     // First we need to get a header slot
     // Then we need to broadcast the request
     // Then wait until we have a quorum
@@ -36,14 +38,20 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
         exit(EXIT_FAILURE);
     }
 
+    uint64_t copy_start_ns = perf_now_ns();
+
     // First copy the key
     for (uint32_t i = 0; i < key_len; i++) {
         hash_data[i] = key[i];
         data_region_start[current_offset] = key[i];
         current_offset = (current_offset + 1) % REQUEST_REGION_DATA_SIZE;
     }
+    perf_record_ns_bytes(PROF_CLIENT_GET2_COPY, perf_now_ns() - copy_start_ns, key_len);
 
+    uint64_t hash_start_ns = perf_now_ns();
     uint32_t key_hash = super_fast_hash(hash_data, (int) (key_len));
+    perf_record_ns_bytes(PROF_CLIENT_GET2_HASH, perf_now_ns() - hash_start_ns, key_len);
+    free(hash_data);
 
     ack_slot->key_hash = key_hash;
 
@@ -57,11 +65,14 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
         key_hash,
         HEADER_SLOT_USED_GET_PHASE1
     );
-    
+
+    perf_record_ns(PROF_CLIENT_GET2_PHASE1_TOTAL, perf_now_ns() - total_start_ns);
+
     return ack_slot->promise;
 }
 
 bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
+    uint64_t poll_start_ns = perf_now_ns();
     // First thing we do is to check for a timeout
     struct timespec end_p;
     clock_gettime(CLOCK_MONOTONIC, &end_p);
@@ -70,6 +81,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
         ack_slot->promise->result = PROMISE_TIMEOUT;
         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
         get_2_sided_decrement();
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
         return true;
     }
 
@@ -167,9 +179,11 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                 ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
                 insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
                 get_2_sided_decrement();
+                perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
                 return true;
             } else {
                 // We did not find any candidates, so we do not want to consume yet wait for more acks to arrive
+                perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
                 return false;
             }
         }
@@ -210,6 +224,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                         ack_slot->promise->result = PROMISE_SUCCESS_PH1;
                         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
                         get_2_sided_decrement();
+                        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
                         return true;
                     }
                 }
@@ -244,16 +259,20 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
             ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
             insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
             get_2_sided_decrement();
+            perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
             return true;
         }
 
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
         return true;
     }
 
+    perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
     return false;
 }
 
 bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
+    uint64_t poll_start_ns = perf_now_ns();
     // Again: first thing to do is to check for a timeout
     struct timespec end_p;
     clock_gettime(CLOCK_MONOTONIC, &end_p);
@@ -261,11 +280,13 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
         ack_slot->promise->result = PROMISE_TIMEOUT;
         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_POLL, perf_now_ns() - poll_start_ns);
         return true;
     }
 
     // We only use the index 0 of the replica slots no matter the index, as this put was only sent to a single replica
     if (ack_slot->replica_ack_instances[0]->replica_ack_type == REPLICA_NOT_ACKED) {
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_POLL, perf_now_ns() - poll_start_ns);
         return false;
     }
 
@@ -273,6 +294,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
         fprintf(stderr, "Unsupported ack state for phase2\n");
         ack_slot->promise->result = PROMISE_ERROR_TRANSFER;
         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_POLL, perf_now_ns() - poll_start_ns);
         return true;
     }
 
@@ -287,6 +309,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
         //TODO: This seems like a bug, as we could have shipped multiple phase2 requests.
         ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_POLL, perf_now_ns() - poll_start_ns);
         return true;
     }
 
@@ -300,6 +323,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     memcpy(ack_slot->promise->data, ack_data + ack_slot->key_len, ack_slot->value_len);
     ack_slot->promise->result = PROMISE_SUCCESS;
     insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
+    perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_POLL, perf_now_ns() - poll_start_ns);
     return true;
 }
 

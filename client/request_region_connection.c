@@ -3,11 +3,13 @@
 #include <sisci_types.h>
 #include <sisci_api.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <stdalign.h>
 #include "sisci_glob_defs.h"
 #include "request_region.h"
 #include "get_node_id.h"
 #include "avx_cpy.h"
+#include "profiler.h"
 
 volatile request_region_t *request_region;
 sci_sequence_t request_sequence;
@@ -88,6 +90,8 @@ void send_request_region_slot(
     uint32_t payload_hash,
     enum header_slot_status status
 ) {
+    uint64_t send_start_ns = perf_now_ns();
+
     alignas(32) header_slot_t local_slot;
     local_slot.key_length = key_length;
     local_slot.value_length = value_length;
@@ -104,4 +108,10 @@ void send_request_region_slot(
     
     slot->status = status;
     // TODO: potentially an sfence here
+
+    perf_record_ns_bytes(
+        PROF_CLIENT_SEND_HEADER,
+        perf_now_ns() - send_start_ns,
+        sizeof(header_slot_t)
+    );
 }

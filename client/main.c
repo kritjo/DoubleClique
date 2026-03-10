@@ -2,6 +2,7 @@
 
 #include <immintrin.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <sisci_api.h>
 #include <time.h>
 #include <sched.h>
@@ -17,6 +18,7 @@
 #include "request_region_connection.h"
 #include "ack_region.h"
 #include "2_phase_2_sided.h"
+#include "profiler.h"
 
 #define NUM_KEYS 13107
 #define THETA 0.99
@@ -41,6 +43,78 @@ static int cmp_u64(const void *a, const void *b) {
     uint64_t aa = *(const uint64_t *)a;
     uint64_t bb = *(const uint64_t *)b;
     return (aa > bb) - (aa < bb);
+}
+
+typedef struct {
+    char experiment_name[64];
+    char distribution_name[16];
+    uint32_t max_inflight;
+    uint64_t wall_ns;
+    uint64_t avg_latency_ns;
+    uint64_t p95_ns;
+    uint64_t p99_ns;
+    double throughput_ops_per_sec;
+    uint32_t status_counts[REQUEST_PROMISE_STATUS_COUNT];
+} experiment_result_t;
+
+#define MAX_EXPERIMENT_RESULTS 256
+static experiment_result_t g_experiment_results[MAX_EXPERIMENT_RESULTS];
+static size_t g_experiment_result_count = 0;
+
+static void add_experiment_result(
+    const char *experiment_name,
+    const char *distribution_name,
+    uint32_t max_inflight,
+    uint64_t wall_ns,
+    uint64_t avg_latency_ns,
+    uint64_t p95_ns,
+    uint64_t p99_ns,
+    double throughput_ops_per_sec,
+    const uint32_t status_counts[REQUEST_PROMISE_STATUS_COUNT]
+) {
+    if (g_experiment_result_count >= MAX_EXPERIMENT_RESULTS) {
+        return;
+    }
+
+    experiment_result_t *dst = &g_experiment_results[g_experiment_result_count++];
+    snprintf(dst->experiment_name, sizeof(dst->experiment_name), "%s", experiment_name);
+    snprintf(dst->distribution_name, sizeof(dst->distribution_name), "%s", distribution_name);
+    dst->max_inflight = max_inflight;
+    dst->wall_ns = wall_ns;
+    dst->avg_latency_ns = avg_latency_ns;
+    dst->p95_ns = p95_ns;
+    dst->p99_ns = p99_ns;
+    dst->throughput_ops_per_sec = throughput_ops_per_sec;
+    memcpy(dst->status_counts, status_counts, sizeof(dst->status_counts));
+}
+
+static void print_experiment_result_report(void) {
+    printf("\n=== Client Experiment Summary ===\n");
+    printf("%-8s %-16s %10s %14s %12s %12s %12s %10s\n",
+           "dist",
+           "workload",
+           "inflight",
+           "throughput",
+           "avg us",
+           "p95 us",
+           "p99 us",
+           "ok %");
+
+    for (size_t i = 0; i < g_experiment_result_count; i++) {
+        const experiment_result_t *r = &g_experiment_results[i];
+        uint32_t ok = r->status_counts[PROMISE_SUCCESS] + r->status_counts[PROMISE_SUCCESS_PH1];
+        double ok_percent = NUM_SAMPLES > 0 ? ((double) ok * 100.0) / (double) NUM_SAMPLES : 0.0;
+
+        printf("%-8s %-16s %10u %14.2f %12.2f %12.2f %12.2f %10.2f\n",
+               r->distribution_name,
+               r->experiment_name,
+               r->max_inflight,
+               r->throughput_ops_per_sec,
+               (double) r->avg_latency_ns / 1e3,
+               (double) r->p95_ns / 1e3,
+               (double) r->p99_ns / 1e3,
+               ok_percent);
+    }
 }
 
 typedef request_promise_t *(*submit_fn_t)(
@@ -215,6 +289,18 @@ static void do_experiment_with_max_inflight(
         printf("    Status %u: %u\n", i, errors[i]);
     }
 
+    add_experiment_result(
+        experiment_name,
+        distribution_name,
+        max_inflight,
+        wall_ns,
+        avg_latency_ns,
+        p95_ns,
+        p99_ns,
+        throughput_ops_per_sec,
+        errors
+    );
+
     free(active);
     free(latencies);
 }
@@ -358,6 +444,8 @@ int main(int argc, char *argv[]) {
     }
     printf("warmed up\n");
 
+    perf_reset_all();
+
     const uint32_t inflights[] = {1, 2, 4, 8, 16, 32, 64, 128};
 
     struct {
@@ -399,7 +487,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    printf("Completed!\n");
+    print_experiment_result_report();
+    perf_print_client_report();
+    printf("\nCompleted!\n");
 
     free(cdf);
     for (uint32_t i = 0; i < NUM_KEYS; i++) {
