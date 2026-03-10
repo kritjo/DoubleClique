@@ -107,11 +107,24 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
 
 bool consume_put_ack_slot(ack_slot_t *ack_slot) {
     uint64_t poll_start_ns = perf_now_ns();
+    uint64_t scan_ns = 0;
+    uint64_t quorum_error_eval_ns = 0;
+    uint64_t timeout_check_ns = 0;
+    uint64_t control_flow_ns = 0;
+    uint64_t result_ns = 0;
 
-#define PUT_POLL_RETURN(result_value, metric_start_ns) \
+#define PUT_POLL_RETURN(result_value) \
     do { \
-        perf_record_ns(PROF_CLIENT_PUT_ACK_POLL_RESULT, perf_now_ns() - (metric_start_ns)); \
-        perf_record_ns(PROF_CLIENT_PUT_ACK_POLL, perf_now_ns() - poll_start_ns); \
+        uint64_t total_ns = perf_now_ns() - poll_start_ns; \
+        uint64_t accounted_ns = scan_ns + quorum_error_eval_ns + timeout_check_ns + control_flow_ns + result_ns; \
+        uint64_t residual_ns = total_ns > accounted_ns ? total_ns - accounted_ns : 0; \
+        perf_record_ns(PROF_CLIENT_PUT_ACK_POLL_SCAN, scan_ns); \
+        perf_record_ns(PROF_CLIENT_PUT_ACK_POLL_QUORUM_ERROR_EVAL, quorum_error_eval_ns); \
+        perf_record_ns(PROF_CLIENT_PUT_ACK_POLL_TIMEOUT_CHECK, timeout_check_ns); \
+        perf_record_ns(PROF_CLIENT_PUT_ACK_POLL_CONTROL_FLOW, control_flow_ns); \
+        perf_record_ns(PROF_CLIENT_PUT_ACK_POLL_RESULT, result_ns); \
+        perf_record_ns(PROF_CLIENT_PUT_ACK_POLL_RESIDUAL, residual_ns); \
+        perf_record_ns(PROF_CLIENT_PUT_ACK_POLL, total_ns); \
         return (result_value); \
     } while (0)
 
@@ -134,19 +147,26 @@ bool consume_put_ack_slot(ack_slot_t *ack_slot) {
         if (ack_type == REPLICA_ACK_SUCCESS)
             ack_success_count++;
     }
-    perf_record_ns(PROF_CLIENT_PUT_ACK_POLL_SCAN, perf_now_ns() - scan_start_ns);
+    scan_ns += perf_now_ns() - scan_start_ns;
 
     // If we got a quorum of success acks, count as success
-    if (ack_success_count >= (REPLICA_COUNT + 1) / 2) {
+    uint64_t control_start_ns = perf_now_ns();
+    bool quorum_reached = ack_success_count >= (REPLICA_COUNT + 1) / 2;
+    control_flow_ns += perf_now_ns() - control_start_ns;
+    if (quorum_reached) {
         uint64_t result_start_ns = perf_now_ns();
         // Success!
         ack_slot->promise->result = PROMISE_SUCCESS;
         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
-        PUT_POLL_RETURN(true, result_start_ns);
+        result_ns += perf_now_ns() - result_start_ns;
+        PUT_POLL_RETURN(true);
     }
 
-    if (ack_count == REPLICA_COUNT) {
-        uint64_t result_start_ns = perf_now_ns();
+    control_start_ns = perf_now_ns();
+    bool all_replied = ack_count == REPLICA_COUNT;
+    control_flow_ns += perf_now_ns() - control_start_ns;
+    if (all_replied) {
+        uint64_t eval_start_ns = perf_now_ns();
         // Check what errors we have gotten
         enum replica_ack_type replica_ack_type;
         bool mix = false;
@@ -161,17 +181,29 @@ bool consume_put_ack_slot(ack_slot_t *ack_slot) {
                 mix = true;
             }
         }
+        quorum_error_eval_ns += perf_now_ns() - eval_start_ns;
 
+        control_start_ns = perf_now_ns();
         if (mix) {
+            control_flow_ns += perf_now_ns() - control_start_ns;
+            uint64_t result_start_ns = perf_now_ns();
             ack_slot->promise->result = PROMISE_ERROR_MIX;
             insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
-            PUT_POLL_RETURN(true, result_start_ns);
+            result_ns += perf_now_ns() - result_start_ns;
+            PUT_POLL_RETURN(true);
         }
+        control_flow_ns += perf_now_ns() - control_start_ns;
 
+        control_start_ns = perf_now_ns();
         switch (replica_ack_type) {
             case REPLICA_ACK_ERROR_OUT_OF_SPACE:
+                {
+                control_flow_ns += perf_now_ns() - control_start_ns;
+                uint64_t result_start_ns = perf_now_ns();
                 ack_slot->promise->result = PROMISE_ERROR_OUT_OF_SPACE;
-                PUT_POLL_RETURN(true, result_start_ns);
+                result_ns += perf_now_ns() - result_start_ns;
+                PUT_POLL_RETURN(true);
+                }
             case REPLICA_ACK_SUCCESS:
             case REPLICA_NOT_ACKED:
             default:
@@ -186,17 +218,20 @@ bool consume_put_ack_slot(ack_slot_t *ack_slot) {
     clock_gettime(CLOCK_MONOTONIC, &end_p);
     bool timed_out =
         ((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= PUT_TIMEOUT_NS;
-    perf_record_ns(PROF_CLIENT_PUT_ACK_POLL_TIMEOUT_CHECK, perf_now_ns() - timeout_check_start_ns);
+    timeout_check_ns += perf_now_ns() - timeout_check_start_ns;
 
+    control_start_ns = perf_now_ns();
     if (timed_out) {
+        control_flow_ns += perf_now_ns() - control_start_ns;
         uint64_t result_start_ns = perf_now_ns();
         ack_slot->promise->result = PROMISE_TIMEOUT;
         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
-        PUT_POLL_RETURN(true, result_start_ns);
+        result_ns += perf_now_ns() - result_start_ns;
+        PUT_POLL_RETURN(true);
     }
+    control_flow_ns += perf_now_ns() - control_start_ns;
 
-    uint64_t result_start_ns = perf_now_ns();
-    PUT_POLL_RETURN(false, result_start_ns);
+    PUT_POLL_RETURN(false);
 
 #undef PUT_POLL_RETURN
 }
