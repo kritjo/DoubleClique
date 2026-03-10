@@ -85,7 +85,9 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
     );
 
     if (payload_hash != slot.payload_hash) {
+        uint64_t mark_unused_start_ns = perf_now_ns();
         request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
+        perf_record_ns(PROF_SERVER_PUT_MARK_HEADER_UNUSED, perf_now_ns() - mark_unused_start_ns);
         free(combined_buffer);
         FINISH_PUT_RETURN();
     }
@@ -102,18 +104,24 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
         new_data_slot = buddy_malloc(buddy, slot.key_length + slot.value_length + sizeof(((header_slot_t *) 0)->version_number));
         if (new_data_slot == NULL) {
             perf_record_ns(PROF_SERVER_PUT_ALLOC, perf_now_ns() - alloc_start_ns);
+            uint64_t retry_lookup_start_ns = perf_now_ns();
             existing_slot_for_key(args->index_region, args->data_region, key_hash,
                                   slot.key_length, key);
+            perf_record_ns(PROF_SERVER_PUT_RETRY_INDEX_LOOKUP, perf_now_ns() - retry_lookup_start_ns);
             uint64_t ack_start_ns = perf_now_ns();
             send_put_ack(args->replica_number, replica_ack, current_head_slot, slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
             perf_record_ns(PROF_SERVER_PUT_ACK, perf_now_ns() - ack_start_ns);
+            uint64_t mark_unused_start_ns = perf_now_ns();
             request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
+            perf_record_ns(PROF_SERVER_PUT_MARK_HEADER_UNUSED, perf_now_ns() - mark_unused_start_ns);
             free(data);
             FINISH_PUT_RETURN();
         }
 
         // Try to find an available slot
+        uint64_t find_slot_start_ns = perf_now_ns();
         index_slot = find_available_index_slot(args->index_region, key_hash);
+        perf_record_ns(PROF_SERVER_PUT_FIND_FREE_INDEX_SLOT, perf_now_ns() - find_slot_start_ns);
 
         // If we do not find one, there is no space left
         if (index_slot == NULL) {
@@ -121,7 +129,9 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
             uint64_t ack_start_ns = perf_now_ns();
             send_put_ack(args->replica_number, replica_ack, current_head_slot, slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
             perf_record_ns(PROF_SERVER_PUT_ACK, perf_now_ns() - ack_start_ns);
+            uint64_t mark_unused_start_ns = perf_now_ns();
             request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
+            perf_record_ns(PROF_SERVER_PUT_MARK_HEADER_UNUSED, perf_now_ns() - mark_unused_start_ns);
             free(data);
             FINISH_PUT_RETURN();
         }
@@ -139,11 +149,14 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
                 uint64_t ack_start_ns = perf_now_ns();
                 send_put_ack(args->replica_number, replica_ack, current_head_slot, slot.version_number, REPLICA_ACK_ERROR_OUT_OF_SPACE);
                 perf_record_ns(PROF_SERVER_PUT_ACK, perf_now_ns() - ack_start_ns);
+                uint64_t mark_unused_start_ns = perf_now_ns();
                 request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
+                perf_record_ns(PROF_SERVER_PUT_MARK_HEADER_UNUSED, perf_now_ns() - mark_unused_start_ns);
                 free(data);
                 FINISH_PUT_RETURN();
             }
         } else {
+            uint64_t gc_enqueue_start_ns = perf_now_ns();
             queue_item_t queue_item;
             queue_item.buddy_allocated_addr = old_data_slot;
             clock_gettime(CLOCK_MONOTONIC, &queue_item.t);
@@ -158,6 +171,7 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
             queue_item.t.tv_nsec = (long)nsec;
 
             enqueue(queue, queue_item);
+            perf_record_ns(PROF_SERVER_PUT_GC_ENQUEUE, perf_now_ns() - gc_enqueue_start_ns);
         }
     }
     perf_record_ns(PROF_SERVER_PUT_ALLOC, perf_now_ns() - alloc_start_ns);
@@ -181,7 +195,9 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
     free(data);
 
     // Need to do this before sending ack in case of race
+    uint64_t mark_unused_start_ns = perf_now_ns();
     request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
+    perf_record_ns(PROF_SERVER_PUT_MARK_HEADER_UNUSED, perf_now_ns() - mark_unused_start_ns);
 
     uint64_t ack_start_ns = perf_now_ns();
     send_put_ack(args->replica_number, replica_ack, current_head_slot, slot.version_number, REPLICA_ACK_SUCCESS);
@@ -359,8 +375,12 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
                                 size_t write_back_offset, char *data_region) {
     uint64_t total_start_ns = perf_now_ns();
     uint64_t copy_bucket_ns = 0;
+    uint64_t copy_bucket_plain_ns = 0;
+    uint64_t copy_bucket_writeback_scan_ns = 0;
     uint64_t writeback_copy_ns = 0;
     uint64_t copy_bucket_bytes = 0;
+    uint64_t copy_bucket_plain_bytes = 0;
+    uint64_t copy_bucket_writeback_scan_bytes = 0;
     uint64_t writeback_bytes = 0;
 
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
@@ -372,8 +392,12 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
         for (uint32_t i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
             replica_ack_instance->bucket[i] = *((index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, i));
         }
-        copy_bucket_ns += perf_now_ns() - copy_start_ns;
-        copy_bucket_bytes += (uint64_t) INDEX_SLOTS_PR_BUCKET * sizeof(index_entry_t);
+        uint64_t copy_elapsed_ns = perf_now_ns() - copy_start_ns;
+        uint64_t copied_bytes = (uint64_t) INDEX_SLOTS_PR_BUCKET * sizeof(index_entry_t);
+        copy_bucket_ns += copy_elapsed_ns;
+        copy_bucket_plain_ns += copy_elapsed_ns;
+        copy_bucket_bytes += copied_bytes;
+        copy_bucket_plain_bytes += copied_bytes;
     } else {
         // Keep local copies to avoid volatile read-after-write
         replica_ack_instance->index_entry_written = -1;
@@ -383,6 +407,7 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
             index_entry_t local_entry = bucket_base[i];
             replica_ack_instance->bucket[i] = local_entry;
             copy_bucket_bytes += sizeof(index_entry_t);
+            copy_bucket_writeback_scan_bytes += sizeof(index_entry_t);
 
             // Now use local_entry instead of reading from volatile memory
             uint32_t transfer_length = local_entry.key_length + local_entry.data_length + sizeof(uint32_t);
@@ -402,13 +427,19 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
                 break;  // Early exit
             }
         }
-        copy_bucket_ns += perf_now_ns() - copy_start_ns;
+        uint64_t copy_elapsed_ns = perf_now_ns() - copy_start_ns;
+        copy_bucket_ns += copy_elapsed_ns;
+        copy_bucket_writeback_scan_ns += copy_elapsed_ns;
     }
 
+    uint64_t ack_finalize_start_ns = perf_now_ns();
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
+    perf_record_ns(PROF_SERVER_GET1_ACK_FINALIZE, perf_now_ns() - ack_finalize_start_ns);
 
     perf_record_ns_bytes(PROF_SERVER_GET1_COPY_BUCKET, copy_bucket_ns, copy_bucket_bytes);
+    perf_record_ns_bytes(PROF_SERVER_GET1_COPY_BUCKET_PLAIN, copy_bucket_plain_ns, copy_bucket_plain_bytes);
+    perf_record_ns_bytes(PROF_SERVER_GET1_COPY_BUCKET_WRITEBACK_SCAN, copy_bucket_writeback_scan_ns, copy_bucket_writeback_scan_bytes);
     perf_record_ns_bytes(PROF_SERVER_GET1_WRITEBACK_COPY, writeback_copy_ns, writeback_bytes);
     perf_record_ns(PROF_SERVER_GET1_ACK_TOTAL, perf_now_ns() - total_start_ns);
 }

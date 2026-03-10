@@ -94,6 +94,10 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
     bool available_slot = false;
     ack_slot_t *ack_slot;
     uint64_t header_wait_ns = 0;
+    uint64_t replica_reset_ns = 0;
+    uint64_t promise_alloc_ns = 0;
+    uint64_t slot_prep_ns = 0;
+    uint64_t commit_ns = 0;
     while (!available_slot) {
         if ((free_header_slot + 1) % REQUEST_SLOTS == oldest_header_slot) {
             uint64_t wait_start_ns = perf_now_ns();
@@ -107,22 +111,27 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
         pthread_mutex_lock(&ack_mutex);
         available_slot = (free_header_slot + 1) % REQUEST_SLOTS != oldest_header_slot;
         if (available_slot) {
+            uint64_t slot_prep_start_ns = perf_now_ns();
             ack_slot = &ack_slots[free_header_slot];
             ack_slot->header_slot_WRITE_ONLY = &request_region->header_slots[free_header_slot];
 
+            uint64_t replica_reset_start_ns = perf_now_ns();
             for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
                 replica_ack_t *replica_ack_instance = replica_ack + (free_header_slot * REPLICA_COUNT) + replica_index;
                 ack_slot->replica_ack_instances[replica_index] = replica_ack_instance;
                 replica_ack_instance->replica_ack_type = REPLICA_NOT_ACKED;
                 replica_ack_instance->version_number = 0;
             }
+            replica_reset_ns += perf_now_ns() - replica_reset_start_ns;
 
             if (promise == NULL) {
+                uint64_t promise_alloc_start_ns = perf_now_ns();
                 promise = malloc(sizeof(request_promise_t));
                 if (promise == NULL) {
                     perror("malloc");
                     exit(EXIT_FAILURE);
                 }
+                promise_alloc_ns += perf_now_ns() - promise_alloc_start_ns;
             }
 
             ack_slot->request_type = request_type;
@@ -147,6 +156,7 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
             ack_slot->key_len = key_len;
             ack_slot->value_len = value_len;
             ack_slot->version_number = version_number;
+            slot_prep_ns += perf_now_ns() - slot_prep_start_ns;
 
             // Wait for enough space
             block_for_available_space(
@@ -169,9 +179,11 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
             );
             ack_slot->ack_data_size = ack_data_length;
 
+            uint64_t commit_start_ns = perf_now_ns();
             clock_gettime(CLOCK_MONOTONIC, &ack_slot->start_time);
 
             free_header_slot = (free_header_slot + 1) % REQUEST_SLOTS;
+            commit_ns += perf_now_ns() - commit_start_ns;
         }
         pthread_mutex_unlock(&ack_mutex);
 
@@ -182,6 +194,10 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
 
     perf_record_ns(PROF_CLIENT_ACK_HEADER_SLOT_WAIT, header_wait_ns);
     perf_record_ns(PROF_CLIENT_ACK_ALLOC_TOTAL, perf_now_ns() - alloc_start_ns);
+    perf_record_ns(PROF_CLIENT_ACK_REPLICA_RESET, replica_reset_ns);
+    perf_record_ns(PROF_CLIENT_ACK_PROMISE_ALLOC, promise_alloc_ns);
+    perf_record_ns(PROF_CLIENT_ACK_SLOT_PREP, slot_prep_ns);
+    perf_record_ns(PROF_CLIENT_ACK_COMMIT, commit_ns);
 
     return ack_slot;
 }

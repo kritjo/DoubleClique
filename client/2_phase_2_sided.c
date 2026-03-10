@@ -26,17 +26,21 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
     // Then wait until we have a quorum
     // Then fetch data from preferred backend
 
+    uint64_t ack_slot_start_ns = perf_now_ns();
     ack_slot_t *ack_slot = get_ack_slot_blocking(GET_PHASE1, key_len, 0, key_len, SPECULATIVE_SIZE, 0, NULL);
+    perf_record_ns(PROF_CLIENT_GET2_ACK_SLOT_ACQUIRE, perf_now_ns() - ack_slot_start_ns);
 
     uint32_t starting_offset = ack_slot->starting_data_offset;
     uint32_t current_offset = starting_offset;
     volatile char *data_region_start = ((volatile char *) request_region) + sizeof(request_region_t);
 
+    uint64_t hash_buf_alloc_start_ns = perf_now_ns();
     char *hash_data = malloc(key_len);
     if (hash_data == NULL) {
         perror("malloc");
         exit(EXIT_FAILURE);
     }
+    perf_record_ns(PROF_CLIENT_GET2_HASH_BUF_ALLOC, perf_now_ns() - hash_buf_alloc_start_ns);
 
     uint64_t copy_start_ns = perf_now_ns();
 
@@ -55,6 +59,7 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
 
     ack_slot->key_hash = key_hash;
 
+    uint64_t send_start_ns = perf_now_ns();
     send_request_region_slot(ack_slot->header_slot_WRITE_ONLY,
         key_len,
         0,
@@ -65,6 +70,7 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
         key_hash,
         HEADER_SLOT_USED_GET_PHASE1
     );
+    perf_record_ns(PROF_CLIENT_GET2_SEND_PHASE1, perf_now_ns() - send_start_ns);
 
     perf_record_ns(PROF_CLIENT_GET2_PHASE1_TOTAL, perf_now_ns() - total_start_ns);
 
@@ -73,21 +79,34 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
 
 bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
     uint64_t poll_start_ns = perf_now_ns();
+
+#define GET2_PHASE1_RETURN(result_value, result_start_ns) \
+    do { \
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_RESULT, perf_now_ns() - (result_start_ns)); \
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns); \
+        return (result_value); \
+    } while (0)
+
     // First thing we do is to check for a timeout
+    uint64_t timeout_check_start_ns = perf_now_ns();
     struct timespec end_p;
     clock_gettime(CLOCK_MONOTONIC, &end_p);
+    bool timed_out =
+        ((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS;
+    perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_TIMEOUT_CHECK, perf_now_ns() - timeout_check_start_ns);
 
-    if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
+    if (timed_out) {
+        uint64_t result_start_ns = perf_now_ns();
         ack_slot->promise->result = PROMISE_TIMEOUT;
         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
         get_2_sided_decrement();
-        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
-        return true;
+        GET2_PHASE1_RETURN(true, result_start_ns);
     }
 
     uint32_t ack_success_count = 0;
     uint32_t ack_count = 0;
 
+    uint64_t scan_acks_start_ns = perf_now_ns();
     for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
         replica_ack_t *replica_ack_instance = ack_slot->replica_ack_instances[replica_index];
         enum replica_ack_type ack_type = replica_ack_instance->replica_ack_type;
@@ -98,9 +117,11 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
         if (ack_type == REPLICA_ACK_SUCCESS)
             ack_success_count++;
     }
+    perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_SCAN_ACKS, perf_now_ns() - scan_acks_start_ns);
 
     if (ack_success_count >= (REPLICA_COUNT + 1) / 2) {
         // Now we must check if we have a quorum, if we do dispatch final request and return true
+        uint64_t build_candidates_start_ns = perf_now_ns();
         version_count_t candidates[REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET];
         uint32_t candidate_count = 0;
 
@@ -159,9 +180,11 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                 }
             }
         }
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_BUILD_CANDIDATES, perf_now_ns() - build_candidates_start_ns);
 
         found_candidates_t found_candidates[REPLICA_COUNT * INDEX_SLOTS_PR_BUCKET];
         uint32_t found_candidates_count = 0;
+        uint64_t filter_quorum_start_ns = perf_now_ns();
         for (uint32_t version_count_index = 0; version_count_index < candidate_count; version_count_index++) {
             if (candidates[version_count_index].count >= (REPLICA_COUNT + 1) / 2) {
                 for (uint32_t i = 0; i < REPLICA_COUNT; i++) {
@@ -172,23 +195,26 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                 found_candidates[found_candidates_count++].version_number = candidates[version_count_index].version_number;
             }
         }
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_FILTER_QUORUM, perf_now_ns() - filter_quorum_start_ns);
 
         if (found_candidates_count == 0) {
             if (ack_count == REPLICA_COUNT) {
+                uint64_t result_start_ns = perf_now_ns();
                 // If we have gotten replies from all replicas and can not find a quorum, it is an error
                 ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
                 insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
                 get_2_sided_decrement();
-                perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
-                return true;
+                GET2_PHASE1_RETURN(true, result_start_ns);
             } else {
                 // We did not find any candidates, so we do not want to consume yet wait for more acks to arrive
-                perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
-                return false;
+                uint64_t result_start_ns = perf_now_ns();
+                GET2_PHASE1_RETURN(false, result_start_ns);
             }
         }
 
         uint32_t shipped = 0;
+        uint64_t fastpath_verify_ns = 0;
+        uint64_t ship_phase2_ns = 0;
 
         // Did find one or more quorums, lets try to get them.
         for (uint32_t candidate_index = 0; candidate_index < found_candidates_count; candidate_index++) {
@@ -206,6 +232,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                 uint32_t value_len = found_candidates[candidate_index].index_entry[replica_index].data_length;
 
                 if (replica_index == WRITE_BACK_REPLICA && found_candidates[candidate_index].write_back) {
+                    uint64_t verify_start_ns = perf_now_ns();
                     char *ack_data = ((char *) replica_ack) + ACK_REGION_SLOT_SIZE + found_candidates[candidate_index].write_back_offset;
                     uint32_t expected_hash = *((uint32_t *) (ack_data + key_len + value_len));
                     *((uint32_t *) (ack_data + key_len + value_len)) = found_candidates[candidate_index].version_number;
@@ -224,14 +251,19 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
                         ack_slot->promise->result = PROMISE_SUCCESS_PH1;
                         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
                         get_2_sided_decrement();
-                        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
-                        return true;
+                        fastpath_verify_ns += perf_now_ns() - verify_start_ns;
+                        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_FASTPATH_VERIFY, fastpath_verify_ns);
+                        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_SHIP_PHASE2, ship_phase2_ns);
+                        uint64_t result_start_ns = perf_now_ns();
+                        GET2_PHASE1_RETURN(true, result_start_ns);
                     }
+                    fastpath_verify_ns += perf_now_ns() - verify_start_ns;
                 }
 
                 ptrdiff_t server_data_offset = found_candidates[candidate_index].index_entry[replica_index].offset;
                 uint32_t version_number = found_candidates[candidate_index].index_entry[replica_index].version_number;
 
+                uint64_t ship_start_ns = perf_now_ns();
                 queue_item_t queue_item;
                 queue_item.version_number = version_number;
                 queue_item.replica_index = replica_index;
@@ -242,10 +274,14 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
 
                 enqueue(queue_item);
                 shipped++;
+                ship_phase2_ns += perf_now_ns() - ship_start_ns;
 
                 break;
             }
         }
+
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_FASTPATH_VERIFY, fastpath_verify_ns);
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_SHIP_PHASE2, ship_phase2_ns);
 
         /* Note that at this point it is in theory possible that we find a quorum for a spurious candidate,
          * and we would later receive the correct candidate. This will currently lead to a timeout, by design.
@@ -256,48 +292,64 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
          * We would however be careful as to not get a deadlock with the request queue being filled up by only phase1
          * requests. */
         if (shipped == 0) {
+            uint64_t result_start_ns = perf_now_ns();
             ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
             insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
             get_2_sided_decrement();
-            perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
-            return true;
+            GET2_PHASE1_RETURN(true, result_start_ns);
         }
 
-        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
-        return true;
+        uint64_t result_start_ns = perf_now_ns();
+        GET2_PHASE1_RETURN(true, result_start_ns);
     }
 
-    perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, perf_now_ns() - poll_start_ns);
-    return false;
+    uint64_t result_start_ns = perf_now_ns();
+    GET2_PHASE1_RETURN(false, result_start_ns);
+
+#undef GET2_PHASE1_RETURN
 }
 
 bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     uint64_t poll_start_ns = perf_now_ns();
+
+#define GET2_PHASE2_RETURN(result_value, result_start_ns) \
+    do { \
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_RESULT, perf_now_ns() - (result_start_ns)); \
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_POLL, perf_now_ns() - poll_start_ns); \
+        return (result_value); \
+    } while (0)
+
     // Again: first thing to do is to check for a timeout
+    uint64_t timeout_check_start_ns = perf_now_ns();
     struct timespec end_p;
     clock_gettime(CLOCK_MONOTONIC, &end_p);
 
-    if (((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS) {
+    bool timed_out =
+        ((end_p.tv_sec - ack_slot->start_time.tv_sec) * 1000000000L + (end_p.tv_nsec - ack_slot->start_time.tv_nsec)) >= GET_TIMEOUT_2_SIDED_NS;
+    perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_TIMEOUT_CHECK, perf_now_ns() - timeout_check_start_ns);
+
+    if (timed_out) {
+        uint64_t result_start_ns = perf_now_ns();
         ack_slot->promise->result = PROMISE_TIMEOUT;
         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
-        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_POLL, perf_now_ns() - poll_start_ns);
-        return true;
+        GET2_PHASE2_RETURN(true, result_start_ns);
     }
 
     // We only use the index 0 of the replica slots no matter the index, as this put was only sent to a single replica
     if (ack_slot->replica_ack_instances[0]->replica_ack_type == REPLICA_NOT_ACKED) {
-        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_POLL, perf_now_ns() - poll_start_ns);
-        return false;
+        uint64_t result_start_ns = perf_now_ns();
+        GET2_PHASE2_RETURN(false, result_start_ns);
     }
 
     if (ack_slot->replica_ack_instances[0]->replica_ack_type != REPLICA_ACK_SUCCESS) {
+        uint64_t result_start_ns = perf_now_ns();
         fprintf(stderr, "Unsupported ack state for phase2\n");
         ack_slot->promise->result = PROMISE_ERROR_TRANSFER;
         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
-        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_POLL, perf_now_ns() - poll_start_ns);
-        return true;
+        GET2_PHASE2_RETURN(true, result_start_ns);
     }
 
+    uint64_t verify_and_copy_start_ns = perf_now_ns();
     // First do verification
     char *ack_data = ((char *) replica_ack) + ACK_REGION_SLOT_SIZE + ack_slot->starting_ack_data_offset;
 
@@ -307,10 +359,11 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     uint32_t hash = super_fast_hash(ack_data, (uint32_t) (ack_slot->key_len + ack_slot->value_len + sizeof(uint32_t)));
     if (hash != expected_hash) {
         //TODO: This seems like a bug, as we could have shipped multiple phase2 requests.
+        uint64_t result_start_ns = perf_now_ns();
         ack_slot->promise->result = PROMISE_ERROR_NO_MATCH;
         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
-        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_POLL, perf_now_ns() - poll_start_ns);
-        return true;
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_VERIFY_AND_COPY, perf_now_ns() - verify_and_copy_start_ns);
+        GET2_PHASE2_RETURN(true, result_start_ns);
     }
 
     ack_slot->promise->data = malloc(ack_slot->value_len);
@@ -323,8 +376,11 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     memcpy(ack_slot->promise->data, ack_data + ack_slot->key_len, ack_slot->value_len);
     ack_slot->promise->result = PROMISE_SUCCESS;
     insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
-    perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_POLL, perf_now_ns() - poll_start_ns);
-    return true;
+    perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_VERIFY_AND_COPY, perf_now_ns() - verify_and_copy_start_ns);
+    uint64_t result_start_ns = perf_now_ns();
+    GET2_PHASE2_RETURN(true, result_start_ns);
+
+#undef GET2_PHASE2_RETURN
 }
 
 void send_phase_2_get(uint32_t version_number, uint32_t replica_index, uint8_t key_len, uint32_t value_len, ptrdiff_t server_data_offset, request_promise_t *promise) {
