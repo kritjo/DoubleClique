@@ -393,7 +393,7 @@ int request_region_poller(void *arg) {
                               server_report_root_count,
                               server_metric_names,
                               server_metric_name_count,
-                              true);
+                              false);
             last_report_ns = now_ns;
         }
     }
