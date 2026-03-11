@@ -318,8 +318,8 @@ int request_region_poller(void *arg) {
             }
 
             uint64_t key_copy_start_ns = perf_now_ns();
-            uint32_t n = slot.key_length;
-            uint32_t first = n;
+            size_t n = slot.key_length;
+            size_t first = n;
 
             if (first > REQUEST_REGION_DATA_SIZE - offset) {
                 first = REQUEST_REGION_DATA_SIZE - offset;
