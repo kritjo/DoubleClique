@@ -63,13 +63,22 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
     uint64_t read_copy_start_ns = perf_now_ns();
 
     // Copy key to hash_data
-    memcpy(hash_data, key, slot.key_length);
+    for (uint32_t i = 0; i < slot.key_length; i++) {
+        hash_data[i] = key[i];
+    }
 
     // Copy value from request region once, then reuse it for hash payload construction.
-    memcpy(data, data_slot_start + value_offset, slot.value_length);
-    memcpy(hash_data + slot.key_length, data, slot.value_length);
+    for (uint32_t i = 0; i < slot.value_length; i++) {
+        char value_byte = data_slot_start[value_offset + i];
+        data[i] = value_byte;
+        hash_data[slot.key_length + i] = value_byte;
+    }
 
-    memcpy(hash_data + slot.key_length + slot.value_length, &slot.version_number, sizeof(uint32_t));
+    uint32_t hash_version = slot.version_number;
+    const char *hash_version_bytes = (const char *) &hash_version;
+    for (size_t i = 0; i < sizeof(hash_version); i++) {
+        hash_data[slot.key_length + slot.value_length + i] = hash_version_bytes[i];
+    }
     perf_record_ns_bytes(
         PROF_SERVER_PUT_READ_COPY,
         perf_now_ns() - read_copy_start_ns,
@@ -307,7 +316,9 @@ int request_region_poller(void *arg) {
             }
 
             uint64_t key_copy_start_ns = perf_now_ns();
-            memcpy(key, data_slot_start + slot.offset, slot.key_length);
+            for (uint32_t i = 0; i < slot.key_length; i++) {
+                key[i] = data_slot_start[slot.offset + i];
+            }
             perf_record_ns_bytes(PROF_SERVER_POLL_KEY_COPY, perf_now_ns() - key_copy_start_ns, slot.key_length);
             key[slot.key_length] = '\0';
 

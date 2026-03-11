@@ -13,7 +13,6 @@
 #include "sequence.h"
 #include "profiler.h"
 #include "profiler_metrics.h"
-#include "avx_cpy.h"
 
 // wraparound version_number, large enough to avoid replay attacks
 static volatile _Atomic uint32_t version_number = 0;
@@ -21,11 +20,6 @@ static volatile _Atomic uint32_t version_number = 0;
 static uint8_t client_id;
 
 static inline void copy_to_request_region(volatile char *dst, const char *src, size_t bytes) {
-    if (bytes >= 64) {
-        memcpy_nt_avx2(dst, src, bytes, CHUNK_SIZE);
-        return;
-    }
-
     for (size_t i = 0; i < bytes; i++) {
         dst[i] = src[i];
     }
@@ -68,12 +62,20 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
 
     uint64_t copy_start_ns = perf_now_ns();
 
-    memcpy(hash_data, key, key_len);
-    memcpy(hash_data + key_len, value, value_len);
+    for (uint8_t i = 0; i < key_len; i++) {
+        hash_data[i] = key[i];
+    }
+    for (uint32_t i = 0; i < value_len; i++) {
+        hash_data[key_len + i] = ((char *) value)[i];
+    }
     copy_to_request_region(request_slot_start, hash_data, (size_t) key_len + value_len);
 
-    // Copy version number into the first 4 bytes of hash_data
-    memcpy(hash_data + key_len + value_len, &ack_slot->version_number, sizeof(((header_slot_t *) 0)->version_number));
+    // Copy version number into hash_data for payload verification.
+    uint32_t hash_version = ack_slot->version_number;
+    const char *hash_version_bytes = (const char *) &hash_version;
+    for (size_t i = 0; i < sizeof(hash_version); i++) {
+        hash_data[key_len + value_len + i] = hash_version_bytes[i];
+    }
     perf_record_ns_bytes(
         PROF_CLIENT_PUT_COPY,
         perf_now_ns() - copy_start_ns,

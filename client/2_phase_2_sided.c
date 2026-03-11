@@ -11,16 +11,10 @@
 #include "sequence.h"
 #include "profiler.h"
 #include "profiler_metrics.h"
-#include "avx_cpy.h"
 
 static void *phase2_thread(__attribute__((unused)) void *_args);
 
 static inline void copy_to_request_region(volatile char *dst, const char *src, size_t bytes) {
-    if (bytes >= 64) {
-        memcpy_nt_avx2(dst, src, bytes, CHUNK_SIZE);
-        return;
-    }
-
     for (size_t i = 0; i < bytes; i++) {
         dst[i] = src[i];
     }
@@ -293,7 +287,9 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
 
                         //TODO: Full key verification?
 
-                        memcpy(ack_slot->promise->data, ack_data + key_len, value_len);
+                        for (uint32_t i = 0; i < value_len; i++) {
+                            ((char *) ack_slot->promise->data)[i] = ack_data[key_len + i];
+                        }
                         ack_slot->promise->result = PROMISE_SUCCESS_PH1;
                         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
                         get_2_sided_decrement();
@@ -428,7 +424,9 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
     }
 
     //TODO: No full key verification?
-    memcpy(ack_slot->promise->data, ack_data + ack_slot->key_len, ack_slot->value_len);
+    for (uint32_t i = 0; i < ack_slot->value_len; i++) {
+        ((char *) ack_slot->promise->data)[i] = ack_data[ack_slot->key_len + i];
+    }
     ack_slot->promise->result = PROMISE_SUCCESS_PH2;
     insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
     perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_VERIFY_AND_COPY, perf_now_ns() - verify_and_copy_start_ns);
