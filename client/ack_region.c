@@ -30,14 +30,13 @@ ack_slot_t ack_slots[REQUEST_SLOTS];
 sci_local_segment_t ack_segment;
 sci_map_t ack_map;
 
-static void block_for_available_space(
+static bool try_allocate_space(
     uint32_t required_space,
     uint32_t *free_offset,
     uint32_t oldest_offset,
     uint32_t *out_starting_offset,
-    uint32_t region_space,
-    client_perf_metric_id_t wait_metric,
-    uint64_t *out_total_ns
+    uint32_t *out_reserved_space,
+    uint32_t region_space
 );
 
 void init_ack_region(sci_desc_t sd) {
@@ -91,6 +90,8 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
     uint64_t critical_slot_check_ns = 0;
     uint64_t data_space_total_ns = 0;
     uint64_t ack_space_total_ns = 0;
+    uint64_t data_space_wait_ns = 0;
+    uint64_t ack_space_wait_ns = 0;
     if (request_type == GET_PHASE1) {
         uint64_t queue_wait_start_ns = perf_now_ns();
         bool available_get_queue_space = false;
@@ -117,6 +118,8 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
     uint64_t slot_prep_ns = 0;
     uint64_t commit_ns = 0;
     while (!available_slot) {
+        bool blocked_by_data_space = false;
+        bool blocked_by_ack_space = false;
         if ((free_header_slot + 1) % REQUEST_SLOTS == oldest_header_slot) {
             uint64_t wait_start_ns = perf_now_ns();
             while ((free_header_slot + 1) % REQUEST_SLOTS == oldest_header_slot) {
@@ -134,81 +137,104 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
         available_slot = (free_header_slot + 1) % REQUEST_SLOTS != oldest_header_slot;
         critical_slot_check_ns += perf_now_ns() - slot_check_start_ns;
         if (available_slot) {
-            uint64_t slot_prep_start_ns = perf_now_ns();
-            ack_slot = &ack_slots[free_header_slot];
-            ack_slot->header_slot_WRITE_ONLY = &request_region->header_slots[free_header_slot];
+            uint32_t new_free_data_offset = free_data_offset;
+            uint32_t new_free_ack_offset = free_ack_offset;
+            uint32_t starting_data_offset = 0;
+            uint32_t starting_ack_offset = 0;
+            uint32_t reserved_data_size = 0;
+            uint32_t reserved_ack_size = 0;
 
-            uint64_t replica_reset_start_ns = perf_now_ns();
-            for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
-                replica_ack_t *replica_ack_instance = replica_ack + (free_header_slot * REPLICA_COUNT) + replica_index;
-                ack_slot->replica_ack_instances[replica_index] = replica_ack_instance;
-                replica_ack_instance->replica_ack_type = REPLICA_NOT_ACKED;
-                replica_ack_instance->version_number = 0;
-            }
-            replica_reset_ns += perf_now_ns() - replica_reset_start_ns;
-
-            if (promise == NULL) {
-                uint64_t promise_alloc_start_ns = perf_now_ns();
-                promise = malloc(sizeof(request_promise_t));
-                if (promise == NULL) {
-                    perror("malloc");
-                    exit(EXIT_FAILURE);
-                }
-                promise_alloc_ns += perf_now_ns() - promise_alloc_start_ns;
-            }
-
-            ack_slot->request_type = request_type;
-
-            switch (ack_slot->request_type) {
-                case PUT:
-                    promise->result = PROMISE_PENDING;
-                    promise->operation = OP_PUT;
-                    break;
-                case GET_PHASE1:
-                    promise->result = PROMISE_PENDING;
-                    promise->operation = OP_GET;
-                    break;
-                case GET_PHASE2:
-                    break;
-                default:
-                    fprintf(stderr, "Got illegal request type\n");
-                    exit(EXIT_FAILURE);
-            }
-
-            ack_slot->promise = promise;
-            ack_slot->key_len = key_len;
-            ack_slot->value_len = value_len;
-            ack_slot->version_number = version_number;
-            slot_prep_ns += perf_now_ns() - slot_prep_start_ns;
-
-            // Wait for enough space
-            block_for_available_space(
+            uint64_t data_space_start_ns = perf_now_ns();
+            bool data_space_available = try_allocate_space(
                 header_data_length,
-                &free_data_offset,
+                &new_free_data_offset,
                 oldest_data_offset,
-                &ack_slot->starting_data_offset,
-                REQUEST_REGION_DATA_SIZE,
-                PROF_CLIENT_ACK_DATA_SPACE_WAIT,
-                &data_space_total_ns
+                &starting_data_offset,
+                &reserved_data_size,
+                REQUEST_REGION_DATA_SIZE
             );
-            ack_slot->data_size = header_data_length;
+            data_space_total_ns += perf_now_ns() - data_space_start_ns;
 
-            block_for_available_space(
-                ack_data_length,
-                &free_ack_offset,
-                oldest_ack_offset,
-                &ack_slot->starting_ack_data_offset,
-                ACK_REGION_DATA_SIZE,
-                PROF_CLIENT_ACK_ACK_SPACE_WAIT,
-                &ack_space_total_ns
-            );
-            ack_slot->ack_data_size = ack_data_length;
+            bool ack_space_available = false;
+            if (data_space_available) {
+                uint64_t ack_space_start_ns = perf_now_ns();
+                ack_space_available = try_allocate_space(
+                    ack_data_length,
+                    &new_free_ack_offset,
+                    oldest_ack_offset,
+                    &starting_ack_offset,
+                    &reserved_ack_size,
+                    ACK_REGION_DATA_SIZE
+                );
+                ack_space_total_ns += perf_now_ns() - ack_space_start_ns;
+            }
 
-            uint64_t commit_start_ns = perf_now_ns();
-            clock_gettime(CLOCK_MONOTONIC, &ack_slot->start_time);
+            if (!data_space_available) {
+                blocked_by_data_space = true;
+                available_slot = false;
+            } else if (!ack_space_available) {
+                blocked_by_ack_space = true;
+                available_slot = false;
+            } else {
+                uint64_t slot_prep_start_ns = perf_now_ns();
+                ack_slot = &ack_slots[free_header_slot];
+                ack_slot->header_slot_WRITE_ONLY = &request_region->header_slots[free_header_slot];
 
-            free_header_slot = (free_header_slot + 1) % REQUEST_SLOTS;
-            commit_ns += perf_now_ns() - commit_start_ns;
+                uint64_t replica_reset_start_ns = perf_now_ns();
+                for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
+                    replica_ack_t *replica_ack_instance = replica_ack + (free_header_slot * REPLICA_COUNT) + replica_index;
+                    ack_slot->replica_ack_instances[replica_index] = replica_ack_instance;
+                    replica_ack_instance->replica_ack_type = REPLICA_NOT_ACKED;
+                    replica_ack_instance->version_number = 0;
+                }
+                replica_reset_ns += perf_now_ns() - replica_reset_start_ns;
+
+                if (promise == NULL) {
+                    uint64_t promise_alloc_start_ns = perf_now_ns();
+                    promise = malloc(sizeof(request_promise_t));
+                    if (promise == NULL) {
+                        perror("malloc");
+                        exit(EXIT_FAILURE);
+                    }
+                    promise_alloc_ns += perf_now_ns() - promise_alloc_start_ns;
+                }
+
+                ack_slot->request_type = request_type;
+
+                switch (ack_slot->request_type) {
+                    case PUT:
+                        promise->result = PROMISE_PENDING;
+                        promise->operation = OP_PUT;
+                        break;
+                    case GET_PHASE1:
+                        promise->result = PROMISE_PENDING;
+                        promise->operation = OP_GET;
+                        break;
+                    case GET_PHASE2:
+                        break;
+                    default:
+                        fprintf(stderr, "Got illegal request type\n");
+                        exit(EXIT_FAILURE);
+                }
+
+                ack_slot->promise = promise;
+                ack_slot->key_len = key_len;
+                ack_slot->value_len = value_len;
+                ack_slot->version_number = version_number;
+                ack_slot->starting_data_offset = starting_data_offset;
+                ack_slot->data_size = reserved_data_size;
+                ack_slot->starting_ack_data_offset = starting_ack_offset;
+                ack_slot->ack_data_size = reserved_ack_size;
+                slot_prep_ns += perf_now_ns() - slot_prep_start_ns;
+
+                uint64_t commit_start_ns = perf_now_ns();
+                clock_gettime(CLOCK_MONOTONIC, &ack_slot->start_time);
+
+                free_data_offset = new_free_data_offset;
+                free_ack_offset = new_free_ack_offset;
+                free_header_slot = (free_header_slot + 1) % REQUEST_SLOTS;
+                commit_ns += perf_now_ns() - commit_start_ns;
+            }
         }
         uint64_t critical_elapsed_ns = perf_now_ns() - critical_start_ns;
         critical_ns += critical_elapsed_ns;
@@ -222,7 +248,14 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
         if (!available_slot) {
             uint64_t pause_start_ns = perf_now_ns();
             _mm_pause();
-            retry_pause_ns += perf_now_ns() - pause_start_ns;
+            uint64_t pause_ns = perf_now_ns() - pause_start_ns;
+            retry_pause_ns += pause_ns;
+            if (blocked_by_data_space) {
+                data_space_wait_ns += pause_ns;
+            }
+            if (blocked_by_ack_space) {
+                ack_space_wait_ns += pause_ns;
+            }
         }
     }
 
@@ -245,7 +278,9 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
     perf_record_ns(PROF_CLIENT_ACK_CRITICAL_SECTION, critical_ns);
     perf_record_ns(PROF_CLIENT_ACK_CRITICAL_SLOT_CHECK, critical_slot_check_ns);
     perf_record_ns(PROF_CLIENT_ACK_CRITICAL_NO_SLOT, critical_no_slot_ns);
+    perf_record_ns(PROF_CLIENT_ACK_DATA_SPACE_WAIT, data_space_wait_ns);
     perf_record_ns(PROF_CLIENT_ACK_DATA_SPACE_TOTAL, data_space_total_ns);
+    perf_record_ns(PROF_CLIENT_ACK_ACK_SPACE_WAIT, ack_space_wait_ns);
     perf_record_ns(PROF_CLIENT_ACK_ACK_SPACE_TOTAL, ack_space_total_ns);
     perf_record_ns(PROF_CLIENT_ACK_ALLOC_TOTAL, alloc_total_ns);
     perf_record_ns(PROF_CLIENT_ACK_ALLOC_RESIDUAL, alloc_residual_ns);
@@ -306,49 +341,50 @@ void *ack_thread(__attribute__((unused)) void *_args) {
     return NULL;
 }
 
-static void block_for_available_space(
+static bool try_allocate_space(
     uint32_t required_space,
     uint32_t *free_offset,
     uint32_t oldest_offset,
     uint32_t *out_starting_offset,
-    uint32_t region_space,
-    client_perf_metric_id_t wait_metric,
-    uint64_t *out_total_ns
+    uint32_t *out_reserved_space,
+    uint32_t region_space
 ) {
-    uint64_t total_start_ns = perf_now_ns();
-    uint64_t wait_ns = 0;
-    bool is_waiting = false;
-    uint64_t wait_start_ns = 0;
-    bool available_space = false;
-    while (1) {
-        uint32_t used = (*free_offset + region_space
-                         - oldest_offset)
-                        % region_space;
-
-        uint32_t free_space = region_space - used;
-        available_space = free_space >= (required_space);
-
-        if (available_space) {
-            if (is_waiting) {
-                wait_ns += perf_now_ns() - wait_start_ns;
-            }
-            // There's enough space
-            *out_starting_offset = *free_offset;
-            *free_offset = (*free_offset + required_space) % region_space;
-            break;
-        }
-
-        if (!is_waiting) {
-            wait_start_ns = perf_now_ns();
-            is_waiting = true;
-        }
-        _mm_pause();
+    if (required_space > region_space) {
+        return false;
     }
 
-    perf_record_ns(wait_metric, wait_ns);
-    if (out_total_ns != NULL) {
-        *out_total_ns += perf_now_ns() - total_start_ns;
+    if (*free_offset < oldest_offset) {
+        uint32_t contiguous_space = oldest_offset - *free_offset;
+        if (contiguous_space < required_space) {
+            return false;
+        }
+
+        *out_starting_offset = *free_offset;
+        *out_reserved_space = required_space;
+        *free_offset += required_space;
+        if (*free_offset == region_space) {
+            *free_offset = 0;
+        }
+        return true;
     }
+
+    uint32_t tail_space = region_space - *free_offset;
+    if (tail_space >= required_space) {
+        *out_starting_offset = *free_offset;
+        *out_reserved_space = required_space;
+        *free_offset = (*free_offset + required_space) % region_space;
+        return true;
+    }
+
+    if (oldest_offset < required_space) {
+        return false;
+    }
+
+    // Skip the tail and reserve it as padding so reclaiming stays monotonic.
+    *out_starting_offset = 0;
+    *out_reserved_space = tail_space + required_space;
+    *free_offset = required_space;
+    return true;
 }
 
 void insert_duration(request_promise_t *promise, struct timespec ts_pre, struct timespec ts_post) {
