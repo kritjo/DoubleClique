@@ -39,7 +39,7 @@ static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_point
                                 uint32_t transfer_length, size_t return_offset);
 
 static void put(request_region_poller_thread_args_t *args, header_slot_t slot, uint32_t current_head_slot,
-         volatile replica_ack_t *replica_ack, uint32_t key_hash, char *key, size_t offset, queue_t *queue) {
+         volatile replica_ack_t *replica_ack, uint32_t key_hash, char *key, size_t value_offset, queue_t *queue) {
     uint64_t put_total_start_ns = perf_now_ns();
 #define FINISH_PUT_RETURN() \
     do { \
@@ -65,12 +65,9 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
     // Copy key to hash_data
     memcpy(hash_data, key, slot.key_length);
 
-    // Copy value to both data and hash_data
-    for (uint32_t i = 0; i < slot.value_length; i++) {
-        data[i] = data_slot_start[offset];
-        hash_data[i + slot.key_length] = data[i];  // Reuse the value we just read
-        offset = (offset + 1) % REQUEST_REGION_DATA_SIZE;
-    }
+    // Copy value from request region once, then reuse it for hash payload construction.
+    memcpy(data, data_slot_start + value_offset, slot.value_length);
+    memcpy(hash_data + slot.key_length, data, slot.value_length);
 
     memcpy(hash_data + slot.key_length + slot.value_length, &slot.version_number, sizeof(uint32_t));
     perf_record_ns_bytes(
@@ -298,7 +295,7 @@ int request_region_poller(void *arg) {
 
             uint64_t slot_load_start_ns = perf_now_ns();
             char *data_slot_start = ((char *) request_region) + sizeof(request_region_t);
-            size_t offset = slot.offset;
+            size_t value_offset = slot.offset + slot.key_length;
             perf_record_ns(PROF_SERVER_POLL_SLOT_LOAD, perf_now_ns() - slot_load_start_ns);
 
             uint64_t key_alloc_start_ns = perf_now_ns();
@@ -310,13 +307,7 @@ int request_region_poller(void *arg) {
             }
 
             uint64_t key_copy_start_ns = perf_now_ns();
-            for (uint32_t i = 0; i < slot.key_length; i++) {
-                key[i] = data_slot_start[offset];
-                offset++;
-                if (offset == REQUEST_REGION_DATA_SIZE) {
-                    offset = 0;
-                }
-            }
+            memcpy(key, data_slot_start + slot.offset, slot.key_length);
             perf_record_ns_bytes(PROF_SERVER_POLL_KEY_COPY, perf_now_ns() - key_copy_start_ns, slot.key_length);
             key[slot.key_length] = '\0';
 
@@ -331,7 +322,7 @@ int request_region_poller(void *arg) {
                 case HEADER_SLOT_USED_PUT:
                     {
                         uint64_t dispatch_put_start_ns = perf_now_ns();
-                        put(args, slot, current_head_slot, replica_ack, key_hash, key, offset, queue);
+                        put(args, slot, current_head_slot, replica_ack, key_hash, key, value_offset, queue);
                         perf_record_ns(PROF_SERVER_POLL_DISPATCH_PUT, perf_now_ns() - dispatch_put_start_ns);
                     }
                     break;

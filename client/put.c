@@ -13,11 +13,23 @@
 #include "sequence.h"
 #include "profiler.h"
 #include "profiler_metrics.h"
+#include "avx_cpy.h"
 
 // wraparound version_number, large enough to avoid replay attacks
 static volatile _Atomic uint32_t version_number = 0;
 
 static uint8_t client_id;
+
+static inline void copy_to_request_region(volatile char *dst, const char *src, size_t bytes) {
+    if (bytes >= 64) {
+        memcpy_nt_avx2(dst, src, bytes, CHUNK_SIZE);
+        return;
+    }
+
+    for (size_t i = 0; i < bytes; i++) {
+        dst[i] = src[i];
+    }
+}
 
 void init_put(void) {
     unsigned int node_id = get_node_id();
@@ -43,8 +55,8 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
     perf_record_ns(PROF_CLIENT_PUT_ACK_SLOT_ACQUIRE, perf_now_ns() - ack_slot_start_ns);
 
     uint32_t starting_offset = ack_slot->starting_data_offset;
-    uint32_t current_offset = starting_offset;
     volatile char *data_region_start = ((volatile char *) request_region) + sizeof(request_region_t);
+    volatile char *request_slot_start = data_region_start + starting_offset;
 
     uint64_t hash_buf_alloc_start_ns = perf_now_ns();
     char *hash_data = malloc(key_len + value_len + sizeof(((header_slot_t *) 0)->version_number));
@@ -56,19 +68,9 @@ request_promise_t *put_blocking_until_available_put_request_region_slot(const ch
 
     uint64_t copy_start_ns = perf_now_ns();
 
-    // First copy the key
-    for (uint32_t i = 0; i < key_len; i++) {
-        hash_data[i] = key[i];
-        data_region_start[current_offset] = key[i];
-        current_offset = (current_offset + 1) % REQUEST_REGION_DATA_SIZE;
-    }
-
-    // Next copy the data
-    for (uint32_t i = 0; i < value_len; i++) {
-        hash_data[i + key_len] = ((char *) value)[i];
-        data_region_start[current_offset] = ((char *) value)[i];
-        current_offset = (current_offset + 1) % REQUEST_REGION_DATA_SIZE;
-    }
+    memcpy(hash_data, key, key_len);
+    memcpy(hash_data + key_len, value, value_len);
+    copy_to_request_region(request_slot_start, hash_data, (size_t) key_len + value_len);
 
     // Copy version number into the first 4 bytes of hash_data
     memcpy(hash_data + key_len + value_len, &ack_slot->version_number, sizeof(((header_slot_t *) 0)->version_number));

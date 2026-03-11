@@ -11,8 +11,20 @@
 #include "sequence.h"
 #include "profiler.h"
 #include "profiler_metrics.h"
+#include "avx_cpy.h"
 
 static void *phase2_thread(__attribute__((unused)) void *_args);
+
+static inline void copy_to_request_region(volatile char *dst, const char *src, size_t bytes) {
+    if (bytes >= 64) {
+        memcpy_nt_avx2(dst, src, bytes, CHUNK_SIZE);
+        return;
+    }
+
+    for (size_t i = 0; i < bytes; i++) {
+        dst[i] = src[i];
+    }
+}
 
 void init_2_phase_2_sided_get(void) {
     queue_init();
@@ -32,31 +44,16 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
     perf_record_ns(PROF_CLIENT_GET2_ACK_SLOT_ACQUIRE, perf_now_ns() - ack_slot_start_ns);
 
     uint32_t starting_offset = ack_slot->starting_data_offset;
-    uint32_t current_offset = starting_offset;
     volatile char *data_region_start = ((volatile char *) request_region) + sizeof(request_region_t);
-
-    uint64_t hash_buf_alloc_start_ns = perf_now_ns();
-    char *hash_data = malloc(key_len);
-    if (hash_data == NULL) {
-        perror("malloc");
-        exit(EXIT_FAILURE);
-    }
-    perf_record_ns(PROF_CLIENT_GET2_HASH_BUF_ALLOC, perf_now_ns() - hash_buf_alloc_start_ns);
+    volatile char *request_slot_start = data_region_start + starting_offset;
 
     uint64_t copy_start_ns = perf_now_ns();
-
-    // First copy the key
-    for (uint32_t i = 0; i < key_len; i++) {
-        hash_data[i] = key[i];
-        data_region_start[current_offset] = key[i];
-        current_offset = (current_offset + 1) % REQUEST_REGION_DATA_SIZE;
-    }
+    copy_to_request_region(request_slot_start, key, key_len);
     perf_record_ns_bytes(PROF_CLIENT_GET2_COPY, perf_now_ns() - copy_start_ns, key_len);
 
     uint64_t hash_start_ns = perf_now_ns();
-    uint32_t key_hash = super_fast_hash(hash_data, (int) (key_len));
+    uint32_t key_hash = super_fast_hash(key, (int) (key_len));
     perf_record_ns_bytes(PROF_CLIENT_GET2_HASH, perf_now_ns() - hash_start_ns, key_len);
-    free(hash_data);
 
     ack_slot->key_hash = key_hash;
 
