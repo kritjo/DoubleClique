@@ -46,6 +46,12 @@ static int cmp_u64(const void *a, const void *b) {
     return (aa > bb) - (aa < bb);
 }
 
+static bool promise_result_is_success(enum request_promise_status status) {
+    return status == PROMISE_SUCCESS ||
+           status == PROMISE_SUCCESS_PH1 ||
+           status == PROMISE_SUCCESS_PH2;
+}
+
 typedef struct {
     char experiment_name[64];
     char distribution_name[16];
@@ -103,7 +109,9 @@ static void print_experiment_result_report(void) {
 
     for (size_t i = 0; i < g_experiment_result_count; i++) {
         const experiment_result_t *r = &g_experiment_results[i];
-        uint32_t ok = r->status_counts[PROMISE_SUCCESS] + r->status_counts[PROMISE_SUCCESS_PH1];
+        uint32_t ok = r->status_counts[PROMISE_SUCCESS] +
+                      r->status_counts[PROMISE_SUCCESS_PH1] +
+                      r->status_counts[PROMISE_SUCCESS_PH2];
         double ok_percent = NUM_SAMPLES > 0 ? ((double) ok * 100.0) / (double) NUM_SAMPLES : 0.0;
 
         printf("%-8s %-16s %10u %14.2f %12.2f %12.2f %12.2f %10.2f\n",
@@ -226,7 +234,7 @@ static void do_experiment_with_max_inflight(
             total_latency_ns += latencies[completed];
             completed++;
 
-            if (p->result == PROMISE_SUCCESS && p->operation == OP_GET) {
+            if (promise_result_is_success(p->result) && p->operation == OP_GET) {
                 free(p->data);
             }
             free(p);
@@ -406,7 +414,7 @@ int main(int argc, char *argv[]) {
         promise = put_blocking_until_available_put_request_region_slot(keys[index], 36, sample_data, VALUE_LEN);
 
         while (promise->result == PROMISE_PENDING) _mm_pause();
-        if (promise->result == PROMISE_SUCCESS) {
+        if (promise_result_is_success(promise->result)) {
             index++;
         }
 
@@ -436,7 +444,7 @@ int main(int argc, char *argv[]) {
     }
     for (uint32_t i = 0; i < NUM_SAMPLES; i++) {
         while(promises[i]->result == PROMISE_PENDING) _mm_pause();
-        if (promises[i]->result == PROMISE_SUCCESS) {
+        if (promise_result_is_success(promises[i]->result)) {
             if (promises[i]->operation == OP_GET) {
                 free(promises[i]->data);
             }

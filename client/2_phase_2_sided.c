@@ -432,7 +432,7 @@ bool consume_get_ack_slot_phase2(ack_slot_t *ack_slot) {
 
     //TODO: No full key verification?
     memcpy(ack_slot->promise->data, ack_data + ack_slot->key_len, ack_slot->value_len);
-    ack_slot->promise->result = PROMISE_SUCCESS;
+    ack_slot->promise->result = PROMISE_SUCCESS_PH2;
     insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
     perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE2_VERIFY_AND_COPY, perf_now_ns() - verify_and_copy_start_ns);
     uint64_t result_start_ns = perf_now_ns();

@@ -559,7 +559,7 @@ preferred_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) sc
             exit(EXIT_FAILURE);
         }
         memcpy(pending_get_status.promise->data, data_slot + args->key_len, data_length);
-        pending_get_status.promise->result = PROMISE_SUCCESS;
+        pending_get_status.promise->result = PROMISE_SUCCESS_PH2;
         insert_duration_end_now(pending_get_status.promise, pending_get_status.start);
 
     } else {
@@ -797,7 +797,7 @@ contingency_data_fetch_completed_callback(void IN *arg, __attribute__((unused)) 
             exit(EXIT_FAILURE);
         }
         memcpy(pending_get_status.promise->data, slot + args->index_entry.key_length, data_length);
-        pending_get_status.promise->result = PROMISE_SUCCESS;
+        pending_get_status.promise->result = PROMISE_SUCCESS_PH2;
         insert_duration_end_now(pending_get_status.promise, pending_get_status.start);
     } else {
         // No match, if we have received all set error, if not just fall through and let another thread handle it
