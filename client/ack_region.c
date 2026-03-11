@@ -2,6 +2,7 @@
 #include <immintrin.h>
 #include <stdlib.h>
 #include <time.h>
+#include <stdatomic.h>
 #include "ack_region.h"
 #include "index_data_protocol.h"
 #include "request_region_connection.h"
@@ -11,24 +12,37 @@
 #include "profiler.h"
 #include "profiler_metrics.h"
 
-static pthread_mutex_t ack_mutex;
+#define ACK_ALLOC_SHARDS 8
 
-static uint32_t free_header_slot = 0;
-static uint32_t oldest_header_slot = 0;
+typedef struct {
+    pthread_mutex_t mutex;
+    uint32_t header_base;
+    uint32_t header_count;
+    uint32_t free_header_slot;
+    uint32_t oldest_header_slot;
+    uint32_t data_base;
+    uint32_t data_region_space;
+    uint32_t free_data_offset;
+    uint32_t oldest_data_offset;
+    uint32_t ack_base;
+    uint32_t ack_region_space;
+    uint32_t free_ack_offset;
+    uint32_t oldest_ack_offset;
+} ack_allocator_shard_t;
 
-static uint32_t free_ack_offset = 0;
-static uint32_t oldest_ack_offset = 0;
-
-static uint32_t current_get_2_sided_requests = 0;
-
-static uint32_t free_data_offset = 0;
-static uint32_t oldest_data_offset = 0;
+static ack_allocator_shard_t ack_shards[ACK_ALLOC_SHARDS];
+static _Atomic uint32_t shard_assignment_counter = 0;
+static _Atomic uint32_t current_get_2_sided_requests = 0;
+static _Thread_local int tls_shard_id = -1;
 
 replica_ack_t *replica_ack;
 ack_slot_t ack_slots[REQUEST_SLOTS];
 
 sci_local_segment_t ack_segment;
 sci_map_t ack_map;
+
+static uint32_t shard_partition_size(uint32_t total, uint32_t shard_index);
+static uint32_t get_thread_shard_id(void);
 
 static bool try_allocate_space(
     uint32_t required_space,
@@ -75,13 +89,50 @@ void init_ack_region(sci_desc_t sd) {
         exit(EXIT_FAILURE);
     }
 
-    pthread_mutex_init(&ack_mutex, NULL);
+    uint32_t header_base = 0;
+    uint32_t data_base = 0;
+    uint32_t ack_base = 0;
+    for (uint32_t shard_index = 0; shard_index < ACK_ALLOC_SHARDS; shard_index++) {
+        ack_allocator_shard_t *shard = &ack_shards[shard_index];
+        shard->header_base = header_base;
+        shard->header_count = shard_partition_size(REQUEST_SLOTS, shard_index);
+        shard->free_header_slot = 0;
+        shard->oldest_header_slot = 0;
+
+        shard->data_base = data_base;
+        shard->data_region_space = shard_partition_size(REQUEST_REGION_DATA_SIZE, shard_index);
+        shard->free_data_offset = 0;
+        shard->oldest_data_offset = 0;
+
+        shard->ack_base = ack_base;
+        shard->ack_region_space = shard_partition_size(ACK_REGION_DATA_SIZE, shard_index);
+        shard->free_ack_offset = 0;
+        shard->oldest_ack_offset = 0;
+
+        if (shard->header_count < 2 || shard->data_region_space == 0 || shard->ack_region_space == 0) {
+            fprintf(stderr, "Illegal shard sizing for shard %u\n", shard_index);
+            exit(EXIT_FAILURE);
+        }
+
+        pthread_mutex_init(&shard->mutex, NULL);
+        header_base += shard->header_count;
+        data_base += shard->data_region_space;
+        ack_base += shard->ack_region_space;
+    }
+
+    if (header_base != REQUEST_SLOTS || data_base != REQUEST_REGION_DATA_SIZE || ack_base != ACK_REGION_DATA_SIZE) {
+        fprintf(stderr, "Shard partitioning failed\n");
+        exit(EXIT_FAILURE);
+    }
 }
 
 // Critical region function
 ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_len, uint32_t value_len, uint32_t header_data_length, uint32_t ack_data_length, uint32_t version_number, request_promise_t *promise) {
     uint64_t alloc_start_ns = perf_now_ns();
+    uint32_t shard_id = get_thread_shard_id();
+    ack_allocator_shard_t *shard = &ack_shards[shard_id];
     uint64_t queue_wait_ns = 0;
+    uint64_t header_wait_ns = 0;
     uint64_t retry_pause_ns = 0;
     uint64_t lock_wait_ns = 0;
     uint64_t unlock_wait_ns = 0;
@@ -94,15 +145,15 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
     uint64_t ack_space_wait_ns = 0;
     if (request_type == GET_PHASE1) {
         uint64_t queue_wait_start_ns = perf_now_ns();
-        bool available_get_queue_space = false;
         while (1) {
-            pthread_mutex_lock(&ack_mutex);
-            available_get_queue_space = current_get_2_sided_requests < QUEUE_SPACE;
-            if (available_get_queue_space) {
-                current_get_2_sided_requests++;
-            }
-            pthread_mutex_unlock(&ack_mutex);
-            if (available_get_queue_space) {
+            uint32_t queued_requests = atomic_load_explicit(&current_get_2_sided_requests, memory_order_relaxed);
+            if (queued_requests < QUEUE_SPACE &&
+                atomic_compare_exchange_weak_explicit(
+                    &current_get_2_sided_requests,
+                    &queued_requests,
+                    queued_requests + 1,
+                    memory_order_acq_rel,
+                    memory_order_relaxed)) {
                 break;
             }
             _mm_pause();
@@ -112,7 +163,6 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
 
     bool available_slot = false;
     ack_slot_t *ack_slot;
-    uint64_t header_wait_ns = 0;
     uint64_t replica_reset_ns = 0;
     uint64_t promise_alloc_ns = 0;
     uint64_t slot_prep_ns = 0;
@@ -120,25 +170,19 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
     while (!available_slot) {
         bool blocked_by_data_space = false;
         bool blocked_by_ack_space = false;
-        if ((free_header_slot + 1) % REQUEST_SLOTS == oldest_header_slot) {
-            uint64_t wait_start_ns = perf_now_ns();
-            while ((free_header_slot + 1) % REQUEST_SLOTS == oldest_header_slot) {
-                _mm_pause();
-            }
-            header_wait_ns += perf_now_ns() - wait_start_ns;
-            continue;
-        }
+        bool blocked_by_header_slot = false;
 
         uint64_t lock_wait_start_ns = perf_now_ns();
-        pthread_mutex_lock(&ack_mutex);
+        pthread_mutex_lock(&shard->mutex);
         lock_wait_ns += perf_now_ns() - lock_wait_start_ns;
         uint64_t critical_start_ns = perf_now_ns();
         uint64_t slot_check_start_ns = perf_now_ns();
-        available_slot = (free_header_slot + 1) % REQUEST_SLOTS != oldest_header_slot;
+        uint32_t next_free_header_slot = (shard->free_header_slot + 1) % shard->header_count;
+        available_slot = next_free_header_slot != shard->oldest_header_slot;
         critical_slot_check_ns += perf_now_ns() - slot_check_start_ns;
         if (available_slot) {
-            uint32_t new_free_data_offset = free_data_offset;
-            uint32_t new_free_ack_offset = free_ack_offset;
+            uint32_t new_free_data_offset = shard->free_data_offset;
+            uint32_t new_free_ack_offset = shard->free_ack_offset;
             uint32_t starting_data_offset = 0;
             uint32_t starting_ack_offset = 0;
             uint32_t reserved_data_size = 0;
@@ -148,10 +192,10 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
             bool data_space_available = try_allocate_space(
                 header_data_length,
                 &new_free_data_offset,
-                oldest_data_offset,
+                shard->oldest_data_offset,
                 &starting_data_offset,
                 &reserved_data_size,
-                REQUEST_REGION_DATA_SIZE
+                shard->data_region_space
             );
             data_space_total_ns += perf_now_ns() - data_space_start_ns;
 
@@ -161,10 +205,10 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
                 ack_space_available = try_allocate_space(
                     ack_data_length,
                     &new_free_ack_offset,
-                    oldest_ack_offset,
+                    shard->oldest_ack_offset,
                     &starting_ack_offset,
                     &reserved_ack_size,
-                    ACK_REGION_DATA_SIZE
+                    shard->ack_region_space
                 );
                 ack_space_total_ns += perf_now_ns() - ack_space_start_ns;
             }
@@ -177,12 +221,13 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
                 available_slot = false;
             } else {
                 uint64_t slot_prep_start_ns = perf_now_ns();
-                ack_slot = &ack_slots[free_header_slot];
-                ack_slot->header_slot_WRITE_ONLY = &request_region->header_slots[free_header_slot];
+                uint32_t global_header_slot = shard->header_base + shard->free_header_slot;
+                ack_slot = &ack_slots[global_header_slot];
+                ack_slot->header_slot_WRITE_ONLY = &request_region->header_slots[global_header_slot];
 
                 uint64_t replica_reset_start_ns = perf_now_ns();
                 for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {
-                    replica_ack_t *replica_ack_instance = replica_ack + (free_header_slot * REPLICA_COUNT) + replica_index;
+                    replica_ack_t *replica_ack_instance = replica_ack + (global_header_slot * REPLICA_COUNT) + replica_index;
                     ack_slot->replica_ack_instances[replica_index] = replica_ack_instance;
                     replica_ack_instance->replica_ack_type = REPLICA_NOT_ACKED;
                     replica_ack_instance->version_number = 0;
@@ -221,20 +266,23 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
                 ack_slot->key_len = key_len;
                 ack_slot->value_len = value_len;
                 ack_slot->version_number = version_number;
-                ack_slot->starting_data_offset = starting_data_offset;
+                ack_slot->shard_id = (uint8_t) shard_id;
+                ack_slot->starting_data_offset = shard->data_base + starting_data_offset;
                 ack_slot->data_size = reserved_data_size;
-                ack_slot->starting_ack_data_offset = starting_ack_offset;
+                ack_slot->starting_ack_data_offset = shard->ack_base + starting_ack_offset;
                 ack_slot->ack_data_size = reserved_ack_size;
                 slot_prep_ns += perf_now_ns() - slot_prep_start_ns;
 
                 uint64_t commit_start_ns = perf_now_ns();
                 clock_gettime(CLOCK_MONOTONIC, &ack_slot->start_time);
 
-                free_data_offset = new_free_data_offset;
-                free_ack_offset = new_free_ack_offset;
-                free_header_slot = (free_header_slot + 1) % REQUEST_SLOTS;
+                shard->free_data_offset = new_free_data_offset;
+                shard->free_ack_offset = new_free_ack_offset;
+                shard->free_header_slot = next_free_header_slot;
                 commit_ns += perf_now_ns() - commit_start_ns;
             }
+        } else {
+            blocked_by_header_slot = true;
         }
         uint64_t critical_elapsed_ns = perf_now_ns() - critical_start_ns;
         critical_ns += critical_elapsed_ns;
@@ -242,19 +290,23 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
             critical_success_ns += critical_elapsed_ns;
         }
         uint64_t unlock_start_ns = perf_now_ns();
-        pthread_mutex_unlock(&ack_mutex);
+        pthread_mutex_unlock(&shard->mutex);
         unlock_wait_ns += perf_now_ns() - unlock_start_ns;
 
         if (!available_slot) {
             uint64_t pause_start_ns = perf_now_ns();
             _mm_pause();
             uint64_t pause_ns = perf_now_ns() - pause_start_ns;
-            retry_pause_ns += pause_ns;
-            if (blocked_by_data_space) {
-                data_space_wait_ns += pause_ns;
-            }
-            if (blocked_by_ack_space) {
-                ack_space_wait_ns += pause_ns;
+            if (blocked_by_header_slot) {
+                header_wait_ns += pause_ns;
+            } else {
+                retry_pause_ns += pause_ns;
+                if (blocked_by_data_space) {
+                    data_space_wait_ns += pause_ns;
+                }
+                if (blocked_by_ack_space) {
+                    ack_space_wait_ns += pause_ns;
+                }
             }
         }
     }
@@ -293,19 +345,32 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
 }
 
 void get_2_sided_decrement(void) {
-    current_get_2_sided_requests--;
+    atomic_fetch_sub_explicit(&current_get_2_sided_requests, 1, memory_order_acq_rel);
 }
 
 void *ack_thread(__attribute__((unused)) void *_args) {
+    uint32_t shard_cursor = 0;
     while (1) {
-        pthread_mutex_lock(&ack_mutex);
-        if (oldest_header_slot == free_header_slot) { 
-            pthread_mutex_unlock(&ack_mutex);
+        ack_allocator_shard_t *shard = &ack_shards[shard_cursor];
+        bool has_pending = false;
+        uint32_t local_oldest_header_slot = 0;
+        uint32_t global_header_slot = 0;
+
+        pthread_mutex_lock(&shard->mutex);
+        if (shard->oldest_header_slot != shard->free_header_slot) {
+            has_pending = true;
+            local_oldest_header_slot = shard->oldest_header_slot;
+            global_header_slot = shard->header_base + local_oldest_header_slot;
+        }
+        pthread_mutex_unlock(&shard->mutex);
+
+        if (!has_pending) {
+            shard_cursor = (shard_cursor + 1) % ACK_ALLOC_SHARDS;
             _mm_pause();
-            continue; 
+            continue;
         }
 
-        ack_slot_t *ack_slot = &ack_slots[oldest_header_slot];
+        ack_slot_t *ack_slot = &ack_slots[global_header_slot];
 
         bool consumed;
         switch (ack_slot->request_type) {
@@ -325,20 +390,39 @@ void *ack_thread(__attribute__((unused)) void *_args) {
         }
 
         if (!consumed) {
-            pthread_mutex_unlock(&ack_mutex);
+            shard_cursor = (shard_cursor + 1) % ACK_ALLOC_SHARDS;
+            _mm_pause();
             continue;
         }
 
-        ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_UNUSED;
-        oldest_header_slot = (oldest_header_slot + 1) % REQUEST_SLOTS;
-        oldest_data_offset = (oldest_data_offset + ack_slot->data_size) % REQUEST_REGION_DATA_SIZE;
-        oldest_ack_offset = (oldest_ack_offset + ack_slot->ack_data_size) % ACK_REGION_DATA_SIZE;
-        pthread_mutex_unlock(&ack_mutex);
+        pthread_mutex_lock(&shard->mutex);
+        if (shard->oldest_header_slot == local_oldest_header_slot) {
+            ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_UNUSED;
+            shard->oldest_header_slot = (shard->oldest_header_slot + 1) % shard->header_count;
+            shard->oldest_data_offset = (shard->oldest_data_offset + ack_slot->data_size) % shard->data_region_space;
+            shard->oldest_ack_offset = (shard->oldest_ack_offset + ack_slot->ack_data_size) % shard->ack_region_space;
+        }
+        pthread_mutex_unlock(&shard->mutex);
 
+        shard_cursor = (shard_cursor + 1) % ACK_ALLOC_SHARDS;
         _mm_pause();
     }
 
     return NULL;
+}
+
+static uint32_t shard_partition_size(uint32_t total, uint32_t shard_index) {
+    uint32_t base = total / ACK_ALLOC_SHARDS;
+    uint32_t remainder = total % ACK_ALLOC_SHARDS;
+    return base + (shard_index < remainder ? 1u : 0u);
+}
+
+static uint32_t get_thread_shard_id(void) {
+    if (tls_shard_id < 0) {
+        uint32_t assigned = atomic_fetch_add_explicit(&shard_assignment_counter, 1, memory_order_relaxed);
+        tls_shard_id = (int) (assigned % ACK_ALLOC_SHARDS);
+    }
+    return (uint32_t) tls_shard_id;
 }
 
 static bool try_allocate_space(

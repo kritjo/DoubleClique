@@ -43,6 +43,7 @@ typedef struct {
     enum request_type request_type;
     request_promise_t *promise;
     uint8_t key_len;
+    uint8_t shard_id;
     uint32_t value_len;
     uint32_t version_number;
     uint32_t starting_data_offset;
