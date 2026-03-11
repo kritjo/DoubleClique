@@ -34,7 +34,6 @@ typedef struct {
 static ack_allocator_shard_t ack_shards[ACK_ALLOC_SHARDS];
 static _Atomic uint32_t shard_assignment_counter = 0;
 static _Atomic uint32_t current_get_2_sided_requests = 0;
-static _Atomic uint32_t active_shard_mask = 0;
 static _Thread_local int tls_shard_id = -1;
 
 replica_ack_t *replica_ack;
@@ -45,7 +44,6 @@ sci_map_t ack_map;
 
 static uint32_t shard_partition_size(uint32_t total, uint32_t shard_index);
 static uint32_t get_thread_shard_id(void);
-static int32_t find_next_active_shard(uint32_t active_mask, uint32_t start_shard);
 
 static bool try_allocate_space(
     uint32_t required_space,
@@ -122,8 +120,6 @@ void init_ack_region(sci_desc_t sd) {
         data_base += shard->data_region_space;
         ack_base += shard->ack_region_space;
     }
-    atomic_store_explicit(&active_shard_mask, 0, memory_order_relaxed);
-
     if (header_base != REQUEST_SLOTS || data_base != REQUEST_REGION_DATA_SIZE || ack_base != ACK_REGION_DATA_SIZE) {
         fprintf(stderr, "Shard partitioning failed\n");
         exit(EXIT_FAILURE);
@@ -283,7 +279,6 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
                 shard->free_data_offset = new_free_data_offset;
                 shard->free_ack_offset = new_free_ack_offset;
                 shard->free_header_slot = next_free_header_slot;
-                atomic_fetch_or_explicit(&active_shard_mask, 1u << shard_id, memory_order_release);
                 commit_ns += perf_now_ns() - commit_start_ns;
             }
         } else {
@@ -355,96 +350,65 @@ void get_2_sided_decrement(void) {
 
 void *ack_thread(__attribute__((unused)) void *_args) {
     uint32_t shard_cursor = 0;
-    int32_t hot_shard = -1;
     while (1) {
-        uint32_t active_mask = atomic_load_explicit(&active_shard_mask, memory_order_acquire);
-        int32_t shard_id = -1;
+        bool did_work = false;
+        for (uint32_t scanned = 0; scanned < ACK_ALLOC_SHARDS; scanned++) {
+            uint32_t shard_id = (shard_cursor + scanned) % ACK_ALLOC_SHARDS;
+            ack_allocator_shard_t *shard = &ack_shards[shard_id];
 
-        if (hot_shard >= 0 && (active_mask & (1u << (uint32_t) hot_shard))) {
-            shard_id = hot_shard;
-        } else {
-            shard_id = find_next_active_shard(active_mask, shard_cursor);
-            hot_shard = -1;
-        }
+            for (uint32_t drained = 0; drained < ACK_DRAIN_BATCH; drained++) {
+                bool has_pending = false;
+                uint32_t local_oldest_header_slot = 0;
+                uint32_t global_header_slot = 0;
 
-        if (shard_id < 0) {
-            ack_allocator_shard_t *probe_shard = &ack_shards[shard_cursor];
-            pthread_mutex_lock(&probe_shard->mutex);
-            bool probe_has_pending = probe_shard->oldest_header_slot != probe_shard->free_header_slot;
-            pthread_mutex_unlock(&probe_shard->mutex);
-            if (probe_has_pending) {
-                atomic_fetch_or_explicit(&active_shard_mask, 1u << shard_cursor, memory_order_release);
-            } else {
-                shard_cursor = (shard_cursor + 1u) % ACK_ALLOC_SHARDS;
-            }
-            _mm_pause();
-            continue;
-        }
-
-        shard_cursor = ((uint32_t) shard_id + 1u) % ACK_ALLOC_SHARDS;
-        ack_allocator_shard_t *shard = &ack_shards[shard_id];
-        uint32_t drained = 0;
-
-        for (; drained < ACK_DRAIN_BATCH; drained++) {
-            bool has_pending = false;
-            uint32_t local_oldest_header_slot = 0;
-            uint32_t global_header_slot = 0;
-
-            pthread_mutex_lock(&shard->mutex);
-            if (shard->oldest_header_slot != shard->free_header_slot) {
-                has_pending = true;
-                local_oldest_header_slot = shard->oldest_header_slot;
-                global_header_slot = shard->header_base + local_oldest_header_slot;
-            } else {
-                atomic_fetch_and_explicit(&active_shard_mask, ~(1u << (uint32_t) shard_id), memory_order_release);
-            }
-            pthread_mutex_unlock(&shard->mutex);
-
-            if (!has_pending) {
-                break;
-            }
-
-            ack_slot_t *ack_slot = &ack_slots[global_header_slot];
-
-            bool consumed;
-            switch (ack_slot->request_type) {
-                case PUT:
-                    consumed = consume_put_ack_slot(ack_slot);
-                    break;
-                case GET_PHASE1:
-                    consumed = consume_get_ack_slot_phase1(ack_slot);
-                    break;
-                case GET_PHASE2:
-                    consumed = consume_get_ack_slot_phase2(ack_slot);
-                    if (consumed) get_2_sided_decrement();
-                    break;
-                default:
-                    fprintf(stderr, "Got illegal request type\n");
-                    exit(EXIT_FAILURE);
-            }
-
-            if (!consumed) {
-                break;
-            }
-
-            pthread_mutex_lock(&shard->mutex);
-            if (shard->oldest_header_slot == local_oldest_header_slot) {
-                ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_UNUSED;
-                shard->oldest_header_slot = (shard->oldest_header_slot + 1) % shard->header_count;
-                shard->oldest_data_offset = (shard->oldest_data_offset + ack_slot->data_size) % shard->data_region_space;
-                shard->oldest_ack_offset = (shard->oldest_ack_offset + ack_slot->ack_data_size) % shard->ack_region_space;
-                if (shard->oldest_header_slot == shard->free_header_slot) {
-                    atomic_fetch_and_explicit(&active_shard_mask, ~(1u << (uint32_t) shard_id), memory_order_release);
+                pthread_mutex_lock(&shard->mutex);
+                if (shard->oldest_header_slot != shard->free_header_slot) {
+                    has_pending = true;
+                    local_oldest_header_slot = shard->oldest_header_slot;
+                    global_header_slot = shard->header_base + local_oldest_header_slot;
                 }
-            }
-            pthread_mutex_unlock(&shard->mutex);
-        }
+                pthread_mutex_unlock(&shard->mutex);
 
-        uint32_t refreshed_mask = atomic_load_explicit(&active_shard_mask, memory_order_acquire);
-        if (drained == ACK_DRAIN_BATCH && (refreshed_mask & (1u << (uint32_t) shard_id))) {
-            hot_shard = shard_id;
-        } else {
-            hot_shard = -1;
+                if (!has_pending) {
+                    break;
+                }
+
+                ack_slot_t *ack_slot = &ack_slots[global_header_slot];
+
+                bool consumed;
+                switch (ack_slot->request_type) {
+                    case PUT:
+                        consumed = consume_put_ack_slot(ack_slot);
+                        break;
+                    case GET_PHASE1:
+                        consumed = consume_get_ack_slot_phase1(ack_slot);
+                        break;
+                    case GET_PHASE2:
+                        consumed = consume_get_ack_slot_phase2(ack_slot);
+                        if (consumed) get_2_sided_decrement();
+                        break;
+                    default:
+                        fprintf(stderr, "Got illegal request type\n");
+                        exit(EXIT_FAILURE);
+                }
+
+                if (!consumed) {
+                    break;
+                }
+
+                pthread_mutex_lock(&shard->mutex);
+                if (shard->oldest_header_slot == local_oldest_header_slot) {
+                    ack_slot->header_slot_WRITE_ONLY->status = HEADER_SLOT_UNUSED;
+                    shard->oldest_header_slot = (shard->oldest_header_slot + 1) % shard->header_count;
+                    shard->oldest_data_offset = (shard->oldest_data_offset + ack_slot->data_size) % shard->data_region_space;
+                    shard->oldest_ack_offset = (shard->oldest_ack_offset + ack_slot->ack_data_size) % shard->ack_region_space;
+                }
+                pthread_mutex_unlock(&shard->mutex);
+                did_work = true;
+            }
+        }
+        shard_cursor = (shard_cursor + 1u) % ACK_ALLOC_SHARDS;
+        if (!did_work) {
             _mm_pause();
         }
     }
@@ -464,21 +428,6 @@ static uint32_t get_thread_shard_id(void) {
         tls_shard_id = (int) (assigned % ACK_ALLOC_SHARDS);
     }
     return (uint32_t) tls_shard_id;
-}
-
-static int32_t find_next_active_shard(uint32_t active_mask, uint32_t start_shard) {
-    if (active_mask == 0) {
-        return -1;
-    }
-
-    for (uint32_t i = 0; i < ACK_ALLOC_SHARDS; i++) {
-        uint32_t shard_id = (start_shard + i) % ACK_ALLOC_SHARDS;
-        if (active_mask & (1u << shard_id)) {
-            return (int32_t) shard_id;
-        }
-    }
-
-    return -1;
 }
 
 static bool try_allocate_space(
