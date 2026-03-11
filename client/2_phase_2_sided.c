@@ -81,20 +81,30 @@ request_promise_t *get_2_phase_2_sided(const char *key, uint8_t key_len) {
 bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
     uint64_t poll_start_ns = perf_now_ns();
     uint64_t timeout_check_ns = 0;
+    uint64_t decision_timeout_ns = 0;
     uint64_t decision_ns = 0;
+    uint64_t pre_scan_ns = 0;
     uint64_t scan_acks_ns = 0;
     uint64_t build_candidates_ns = 0;
     uint64_t filter_quorum_ns = 0;
     uint64_t select_candidate_ns = 0;
     uint64_t fastpath_verify_ns = 0;
     uint64_t ship_phase2_ns = 0;
+    uint64_t main_path_start_ns = 0;
+    bool main_path_started = false;
 
 #define GET2_PHASE1_RETURN(result_value, result_start_ns) \
     do { \
         uint64_t _result_ns = perf_now_ns() - (result_start_ns); \
         uint64_t _total_ns = perf_now_ns() - poll_start_ns; \
-        uint64_t _accounted_ns = timeout_check_ns + decision_ns + scan_acks_ns + build_candidates_ns + filter_quorum_ns + select_candidate_ns + fastpath_verify_ns + ship_phase2_ns + _result_ns; \
+        uint64_t _main_path_ns = (main_path_started && (result_start_ns) > main_path_start_ns) ? (result_start_ns) - main_path_start_ns : 0; \
+        uint64_t _main_path_accounted_ns = pre_scan_ns + decision_ns + scan_acks_ns + build_candidates_ns + filter_quorum_ns + select_candidate_ns + fastpath_verify_ns + ship_phase2_ns; \
+        uint64_t _main_path_overhead_ns = _main_path_ns > _main_path_accounted_ns ? _main_path_ns - _main_path_accounted_ns : 0; \
+        uint64_t _accounted_ns = timeout_check_ns + decision_timeout_ns + _main_path_ns + _result_ns; \
         perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_TIMEOUT_CHECK, timeout_check_ns); \
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_DECISION_TIMEOUT, decision_timeout_ns); \
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_MAIN_PATH, _main_path_ns); \
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_PRE_SCAN, pre_scan_ns); \
         perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_DECISION, decision_ns); \
         perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_SCAN_ACKS, scan_acks_ns); \
         perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_BUILD_CANDIDATES, build_candidates_ns); \
@@ -102,6 +112,7 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
         perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_SELECT_CANDIDATE, select_candidate_ns); \
         perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_FASTPATH_VERIFY, fastpath_verify_ns); \
         perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_SHIP_PHASE2, ship_phase2_ns); \
+        perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_MAIN_PATH_OVERHEAD, _main_path_overhead_ns); \
         perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_RESULT, _result_ns); \
         perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_RESIDUAL, _total_ns > _accounted_ns ? _total_ns - _accounted_ns : 0); \
         perf_record_ns(PROF_CLIENT_GET2_ACK_PHASE1_POLL, _total_ns); \
@@ -118,17 +129,21 @@ bool consume_get_ack_slot_phase1(ack_slot_t *ack_slot) {
 
     uint64_t decision_start_ns = perf_now_ns();
     if (timed_out) {
-        decision_ns += perf_now_ns() - decision_start_ns;
+        decision_timeout_ns += perf_now_ns() - decision_start_ns;
         uint64_t result_start_ns = perf_now_ns();
         ack_slot->promise->result = PROMISE_TIMEOUT;
         insert_duration_end_now(ack_slot->promise, ack_slot->start_time);
         get_2_sided_decrement();
         GET2_PHASE1_RETURN(true, result_start_ns);
     }
-    decision_ns += perf_now_ns() - decision_start_ns;
+    decision_timeout_ns += perf_now_ns() - decision_start_ns;
+    main_path_start_ns = perf_now_ns();
+    main_path_started = true;
 
+    uint64_t pre_scan_start_ns = perf_now_ns();
     uint32_t ack_success_count = 0;
     uint32_t ack_count = 0;
+    pre_scan_ns += perf_now_ns() - pre_scan_start_ns;
 
     uint64_t scan_acks_start_ns = perf_now_ns();
     for (uint32_t replica_index = 0; replica_index < REPLICA_COUNT; replica_index++) {

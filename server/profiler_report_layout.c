@@ -42,6 +42,8 @@ static const char *const g_server_metric_names[SERVER_PROF_METRIC_COUNT] = {
     [PROF_SERVER_GET1_WRITEBACK_INIT] = "server.get1.writeback_init",
     [PROF_SERVER_GET1_ACK_FINALIZE] = "server.get1.ack_finalize",
     [PROF_SERVER_GET1_METRICS_EMIT] = "server.get1.metrics_emit",
+    [PROF_SERVER_GET1_RECORD_OVERHEAD] = "server.get1.record_overhead",
+    [PROF_SERVER_GET1_RESIDUAL] = "server.get1.residual",
     [PROF_SERVER_GET2_ACK_TOTAL] = "server.get2.ack_total",
     [PROF_SERVER_GET2_COPY] = "server.get2.copy",
 };
@@ -101,6 +103,8 @@ static const perf_report_node_t g_server_get1_ack_children[] = {
     {PROF_SERVER_GET1_COPY_BUCKET, "copy_bucket", g_server_get1_copy_bucket_branch_children, ARRAY_LEN(g_server_get1_copy_bucket_branch_children)},
     {PROF_SERVER_GET1_ACK_FINALIZE, "ack_finalize", NULL, 0},
     {PROF_SERVER_GET1_METRICS_EMIT, "metrics_emit", NULL, 0},
+    {PROF_SERVER_GET1_RECORD_OVERHEAD, "record_overhead", NULL, 0},
+    {PROF_SERVER_GET1_RESIDUAL, "residual", NULL, 0},
 };
 
 static const perf_report_node_t g_server_get2_ack_children[] = {

@@ -426,11 +426,16 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
     uint64_t copy_bucket_writeback_scan_bytes = 0;
     uint64_t copy_bucket_writeback_copy_to_ack_bytes = 0;
     uint64_t writeback_bytes = 0;
+    uint64_t writeback_init_ns = 0;
+    uint64_t record_overhead_ns = 0;
 
     uint64_t setup_start_ns = perf_now_ns();
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
     index_entry_t *bucket_base = (index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, 0);
-    perf_record_ns(PROF_SERVER_GET1_SETUP, perf_now_ns() - setup_start_ns);
+    uint64_t setup_ns = perf_now_ns() - setup_start_ns;
+    uint64_t record_start_ns = perf_now_ns();
+    perf_record_ns(PROF_SERVER_GET1_SETUP, setup_ns);
+    record_overhead_ns += perf_now_ns() - record_start_ns;
 
     if (!write_back) {
         // Fast path - just copy
@@ -448,7 +453,10 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
         // Keep local copies to avoid volatile read-after-write
         uint64_t writeback_init_start_ns = perf_now_ns();
         replica_ack_instance->index_entry_written = -1;
-        perf_record_ns(PROF_SERVER_GET1_WRITEBACK_INIT, perf_now_ns() - writeback_init_start_ns);
+        writeback_init_ns = perf_now_ns() - writeback_init_start_ns;
+        record_start_ns = perf_now_ns();
+        perf_record_ns(PROF_SERVER_GET1_WRITEBACK_INIT, writeback_init_ns);
+        record_overhead_ns += perf_now_ns() - record_start_ns;
 
         uint64_t copy_start_ns = perf_now_ns();
         for (int i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
@@ -489,7 +497,10 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
     uint64_t ack_finalize_start_ns = perf_now_ns();
     request_region->header_slots[header_slot].status = HEADER_SLOT_UNUSED;
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
-    perf_record_ns(PROF_SERVER_GET1_ACK_FINALIZE, perf_now_ns() - ack_finalize_start_ns);
+    uint64_t ack_finalize_ns = perf_now_ns() - ack_finalize_start_ns;
+    record_start_ns = perf_now_ns();
+    perf_record_ns(PROF_SERVER_GET1_ACK_FINALIZE, ack_finalize_ns);
+    record_overhead_ns += perf_now_ns() - record_start_ns;
 
     uint64_t metrics_emit_start_ns = perf_now_ns();
     perf_record_ns_bytes(PROF_SERVER_GET1_COPY_BUCKET, copy_bucket_ns, copy_bucket_bytes);
@@ -498,8 +509,23 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
     perf_record_ns_bytes(PROF_SERVER_GET1_COPY_BUCKET_WRITEBACK_COPY_TO_ACK, copy_bucket_writeback_copy_to_ack_ns, copy_bucket_writeback_copy_to_ack_bytes);
     perf_record_ns(PROF_SERVER_GET1_COPY_BUCKET_WRITEBACK_MATCH_CHECK, copy_bucket_writeback_match_check_ns);
     perf_record_ns_bytes(PROF_SERVER_GET1_WRITEBACK_COPY, writeback_copy_ns, writeback_bytes);
-    perf_record_ns(PROF_SERVER_GET1_METRICS_EMIT, perf_now_ns() - metrics_emit_start_ns);
-    perf_record_ns(PROF_SERVER_GET1_ACK_TOTAL, perf_now_ns() - total_start_ns);
+    uint64_t metrics_emit_ns = perf_now_ns() - metrics_emit_start_ns;
+    record_start_ns = perf_now_ns();
+    perf_record_ns(PROF_SERVER_GET1_METRICS_EMIT, metrics_emit_ns);
+    record_overhead_ns += perf_now_ns() - record_start_ns;
+
+    uint64_t total_ns = perf_now_ns() - total_start_ns;
+    uint64_t accounted_ns =
+        setup_ns +
+        writeback_init_ns +
+        copy_bucket_ns +
+        ack_finalize_ns +
+        metrics_emit_ns +
+        record_overhead_ns;
+    uint64_t residual_ns = total_ns > accounted_ns ? total_ns - accounted_ns : 0;
+    perf_record_ns(PROF_SERVER_GET1_RECORD_OVERHEAD, record_overhead_ns);
+    perf_record_ns(PROF_SERVER_GET1_RESIDUAL, residual_ns);
+    perf_record_ns(PROF_SERVER_GET1_ACK_TOTAL, total_ns);
 }
 
 static void send_get_ack_phase2(volatile replica_ack_t *replica_ack_remote_pointer, uint32_t header_slot,
