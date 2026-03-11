@@ -318,17 +318,12 @@ int request_region_poller(void *arg) {
             }
 
             uint64_t key_copy_start_ns = perf_now_ns();
-            size_t n = slot.key_length;
-            size_t first = n;
-
-            if (first > REQUEST_REGION_DATA_SIZE - offset) {
-                first = REQUEST_REGION_DATA_SIZE - offset;
-            }
-
-            memcpy(key, data_slot_start + offset, first);
-
-            if (first < n) {
-                memcpy(key + first, data_slot_start, n - first);
+            for (uint32_t i = 0; i < slot.key_length; i++) {
+                key[i] = data_slot_start[offset];
+                offset++;
+                if (offset == REQUEST_REGION_DATA_SIZE) {
+                    offset = 0;
+                }
             }
             perf_record_ns_bytes(PROF_SERVER_POLL_KEY_COPY, perf_now_ns() - key_copy_start_ns, slot.key_length);
             key[slot.key_length] = '\0';
