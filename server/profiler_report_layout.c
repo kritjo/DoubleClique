@@ -26,7 +26,7 @@ static const char *const g_server_metric_names[SERVER_PROF_METRIC_COUNT] = {
     [PROF_SERVER_PUT_FIND_FREE_INDEX_SLOT] = "server.put.find_free_index_slot",
     [PROF_SERVER_PUT_ALLOC] = "server.put.alloc",
     [PROF_SERVER_PUT_GC_ENQUEUE] = "server.put.gc_enqueue",
-    [PROF_SERVER_PUT_GC_GET_CLOCK] = "server.put.gc_get_clock",
+    [PROF_SERVER_PUT_GC_GET_CLOCK] = "server.put.gc_deadline_calc",
     [PROF_SERVER_PUT_GC_ENQUEUE_CALL] = "server.put.gc_enqueue_call",
     [PROF_SERVER_PUT_INSERT] = "server.put.insert",
     [PROF_SERVER_PUT_MARK_HEADER_UNUSED] = "server.put.mark_header_unused",
@@ -69,7 +69,7 @@ static const perf_report_node_t g_server_poll_slot_children[] = {
 };
 
 static const perf_report_node_t g_server_put_gc_enqueue_children[] = {
-    {PROF_SERVER_PUT_GC_GET_CLOCK, "get_clock", NULL, 0},
+    {PROF_SERVER_PUT_GC_GET_CLOCK, "deadline_calc", NULL, 0},
     {PROF_SERVER_PUT_GC_ENQUEUE_CALL, "enqueue_call", NULL, 0},
 };
 

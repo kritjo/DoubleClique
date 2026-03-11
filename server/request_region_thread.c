@@ -163,17 +163,8 @@ static void put(request_region_poller_thread_args_t *args, header_slot_t slot, u
             queue_item.buddy_allocated_addr = old_data_slot;
 
             uint64_t gc_get_clock_start_ns = perf_now_ns();
-            clock_gettime(CLOCK_MONOTONIC, &queue_item.t);
+            queue_item.ready_at_ns = perf_now_ns() + NS_TO_COLLECTION;
             perf_record_ns(PROF_SERVER_PUT_GC_GET_CLOCK, perf_now_ns() - gc_get_clock_start_ns);
-            long long nsec =
-                (long long)queue_item.t.tv_nsec + NS_TO_COLLECTION;
-
-            if (nsec >= 1000000000LL) {
-                nsec -= 1000000000LL;
-                queue_item.t.tv_sec++;
-            }
-
-            queue_item.t.tv_nsec = (long)nsec;
 
             uint64_t gc_enqueue_call_start_ns = perf_now_ns();
             enqueue(queue, queue_item);
