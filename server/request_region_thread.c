@@ -304,11 +304,14 @@ int request_region_poller(void *arg) {
             if (slot.status == HEADER_SLOT_UNUSED) continue;
             uint64_t slot_total_start_ns = perf_now_ns();
 
+            uint64_t slot_load_start_ns = perf_now_ns();
             char *data_slot_start = ((char *) request_region) + sizeof(request_region_t);
-
             size_t offset = slot.offset;
+            perf_record_ns(PROF_SERVER_POLL_SLOT_LOAD, perf_now_ns() - slot_load_start_ns);
 
+            uint64_t key_alloc_start_ns = perf_now_ns();
             char *key = malloc(slot.key_length + 1);
+            perf_record_ns(PROF_SERVER_POLL_KEY_ALLOC, perf_now_ns() - key_alloc_start_ns);
             if (key == NULL) {
                 perror("malloc");
                 exit(EXIT_FAILURE);
@@ -327,26 +330,41 @@ int request_region_poller(void *arg) {
             perf_record_ns_bytes(PROF_SERVER_POLL_KEY_HASH, perf_now_ns() - key_hash_start_ns, slot.key_length);
 
             // UP until this point is equal for both request types.
+            uint64_t dispatch_total_start_ns = perf_now_ns();
 
             switch (slot.status) {
                 case HEADER_SLOT_USED_PUT:
-                    put(args, slot, current_head_slot, replica_ack, key_hash, key, offset, queue);
+                    {
+                        uint64_t dispatch_put_start_ns = perf_now_ns();
+                        put(args, slot, current_head_slot, replica_ack, key_hash, key, offset, queue);
+                        perf_record_ns(PROF_SERVER_POLL_DISPATCH_PUT, perf_now_ns() - dispatch_put_start_ns);
+                    }
                     break;
                 case HEADER_SLOT_USED_GET_PHASE1:
-                    // Now we need to ship our index entries for this keyhash back
-                    if (key_hash != slot.payload_hash) {
-                        break;
+                    {
+                        uint64_t dispatch_get1_start_ns = perf_now_ns();
+                        // Now we need to ship our index entries for this keyhash back
+                        if (key_hash != slot.payload_hash) {
+                            perf_record_ns(PROF_SERVER_POLL_DISPATCH_GET1_HASH_MISMATCH, perf_now_ns() - dispatch_get1_start_ns);
+                            perf_record_ns(PROF_SERVER_POLL_DISPATCH_GET1, perf_now_ns() - dispatch_get1_start_ns);
+                            break;
+                        }
+                        send_get_ack_phase1(args->replica_number, replica_ack, current_head_slot, key_hash,
+                                            args->index_region, args->replica_number == slot.replica_write_back_hint,
+                                            slot.return_offset, args->data_region);
+                        perf_record_ns(PROF_SERVER_POLL_DISPATCH_GET1, perf_now_ns() - dispatch_get1_start_ns);
                     }
-                    send_get_ack_phase1(args->replica_number, replica_ack, current_head_slot, key_hash,
-                                        args->index_region, args->replica_number == slot.replica_write_back_hint,
-                                        slot.return_offset, args->data_region);
                     break;
                 case HEADER_SLOT_USED_GET_PHASE2:
-                    if (slot.replica_write_back_hint == args->replica_number) {
-                        send_get_ack_phase2(replica_ack, current_head_slot, ((char *) args->data_region) + slot.offset,
-                                            slot.key_length + slot.value_length + sizeof(uint32_t), slot.return_offset);
-                    } else {
-                        request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
+                    {
+                        uint64_t dispatch_get2_start_ns = perf_now_ns();
+                        if (slot.replica_write_back_hint == args->replica_number) {
+                            send_get_ack_phase2(replica_ack, current_head_slot, ((char *) args->data_region) + slot.offset,
+                                                slot.key_length + slot.value_length + sizeof(uint32_t), slot.return_offset);
+                        } else {
+                            request_region->header_slots[current_head_slot].status = HEADER_SLOT_UNUSED;
+                        }
+                        perf_record_ns(PROF_SERVER_POLL_DISPATCH_GET2, perf_now_ns() - dispatch_get2_start_ns);
                     }
                     break;
                 case HEADER_SLOT_UNUSED:
@@ -356,8 +374,15 @@ int request_region_poller(void *arg) {
                     fprintf(stderr, "Illegal state in request region thread\n");
                     exit(EXIT_FAILURE);
             }
+            perf_record_ns(PROF_SERVER_POLL_DISPATCH_TOTAL, perf_now_ns() - dispatch_total_start_ns);
+
+            uint64_t key_free_start_ns = perf_now_ns();
             free(key);
+            perf_record_ns(PROF_SERVER_POLL_KEY_FREE, perf_now_ns() - key_free_start_ns);
+
+            uint64_t bookkeeping_start_ns = perf_now_ns();
             perf_increment(PROF_SERVER_REQUESTS_PROCESSED, 1);
+            perf_record_ns(PROF_SERVER_POLL_BOOKKEEPING, perf_now_ns() - bookkeeping_start_ns);
             perf_record_ns(PROF_SERVER_POLL_SLOT_TOTAL, perf_now_ns() - slot_total_start_ns);
         }
 
@@ -402,8 +427,10 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
     uint64_t copy_bucket_writeback_copy_to_ack_bytes = 0;
     uint64_t writeback_bytes = 0;
 
+    uint64_t setup_start_ns = perf_now_ns();
     volatile replica_ack_t *replica_ack_instance = replica_ack_remote_pointer + (header_slot * REPLICA_COUNT) + replica_index;
     index_entry_t *bucket_base = (index_entry_t *) GET_SLOT_POINTER(index_region, key_hash % INDEX_BUCKETS, 0);
+    perf_record_ns(PROF_SERVER_GET1_SETUP, perf_now_ns() - setup_start_ns);
 
     if (!write_back) {
         // Fast path - just copy
@@ -419,7 +446,9 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
         copy_bucket_plain_bytes += copied_bytes;
     } else {
         // Keep local copies to avoid volatile read-after-write
+        uint64_t writeback_init_start_ns = perf_now_ns();
         replica_ack_instance->index_entry_written = -1;
+        perf_record_ns(PROF_SERVER_GET1_WRITEBACK_INIT, perf_now_ns() - writeback_init_start_ns);
 
         uint64_t copy_start_ns = perf_now_ns();
         for (int i = 0; i < INDEX_SLOTS_PR_BUCKET; i++) {
@@ -462,12 +491,14 @@ static void send_get_ack_phase1(uint8_t replica_index, volatile replica_ack_t *r
     replica_ack_instance->replica_ack_type = REPLICA_ACK_SUCCESS;
     perf_record_ns(PROF_SERVER_GET1_ACK_FINALIZE, perf_now_ns() - ack_finalize_start_ns);
 
+    uint64_t metrics_emit_start_ns = perf_now_ns();
     perf_record_ns_bytes(PROF_SERVER_GET1_COPY_BUCKET, copy_bucket_ns, copy_bucket_bytes);
     perf_record_ns_bytes(PROF_SERVER_GET1_COPY_BUCKET_PLAIN, copy_bucket_plain_ns, copy_bucket_plain_bytes);
     perf_record_ns_bytes(PROF_SERVER_GET1_COPY_BUCKET_WRITEBACK_SCAN, copy_bucket_writeback_scan_ns, copy_bucket_writeback_scan_bytes);
     perf_record_ns_bytes(PROF_SERVER_GET1_COPY_BUCKET_WRITEBACK_COPY_TO_ACK, copy_bucket_writeback_copy_to_ack_ns, copy_bucket_writeback_copy_to_ack_bytes);
     perf_record_ns(PROF_SERVER_GET1_COPY_BUCKET_WRITEBACK_MATCH_CHECK, copy_bucket_writeback_match_check_ns);
     perf_record_ns_bytes(PROF_SERVER_GET1_WRITEBACK_COPY, writeback_copy_ns, writeback_bytes);
+    perf_record_ns(PROF_SERVER_GET1_METRICS_EMIT, perf_now_ns() - metrics_emit_start_ns);
     perf_record_ns(PROF_SERVER_GET1_ACK_TOTAL, perf_now_ns() - total_start_ns);
 }
 

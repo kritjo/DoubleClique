@@ -7,8 +7,17 @@
 static const char *const g_server_metric_names[SERVER_PROF_METRIC_COUNT] = {
     [PROF_SERVER_REQUESTS_PROCESSED] = "server.requests_processed",
     [PROF_SERVER_POLL_SLOT_TOTAL] = "server.poll.slot_total",
+    [PROF_SERVER_POLL_SLOT_LOAD] = "server.poll.slot_load",
+    [PROF_SERVER_POLL_KEY_ALLOC] = "server.poll.key_alloc",
     [PROF_SERVER_POLL_KEY_COPY] = "server.poll.key_copy",
     [PROF_SERVER_POLL_KEY_HASH] = "server.poll.key_hash",
+    [PROF_SERVER_POLL_DISPATCH_TOTAL] = "server.poll.dispatch_total",
+    [PROF_SERVER_POLL_DISPATCH_PUT] = "server.poll.dispatch_put",
+    [PROF_SERVER_POLL_DISPATCH_GET1] = "server.poll.dispatch_get1",
+    [PROF_SERVER_POLL_DISPATCH_GET2] = "server.poll.dispatch_get2",
+    [PROF_SERVER_POLL_DISPATCH_GET1_HASH_MISMATCH] = "server.poll.dispatch_get1_hash_mismatch",
+    [PROF_SERVER_POLL_KEY_FREE] = "server.poll.key_free",
+    [PROF_SERVER_POLL_BOOKKEEPING] = "server.poll.bookkeeping",
     [PROF_SERVER_PUT_TOTAL] = "server.put.total",
     [PROF_SERVER_PUT_READ_COPY] = "server.put.read_copy",
     [PROF_SERVER_PUT_HASH_VERIFY] = "server.put.hash_verify",
@@ -29,14 +38,32 @@ static const char *const g_server_metric_names[SERVER_PROF_METRIC_COUNT] = {
     [PROF_SERVER_GET1_COPY_BUCKET_WRITEBACK_COPY_TO_ACK] = "server.get1.copy_bucket_writeback_copy_to_ack",
     [PROF_SERVER_GET1_COPY_BUCKET_WRITEBACK_MATCH_CHECK] = "server.get1.copy_bucket_writeback_match_check",
     [PROF_SERVER_GET1_WRITEBACK_COPY] = "server.get1.writeback_copy",
+    [PROF_SERVER_GET1_SETUP] = "server.get1.setup",
+    [PROF_SERVER_GET1_WRITEBACK_INIT] = "server.get1.writeback_init",
     [PROF_SERVER_GET1_ACK_FINALIZE] = "server.get1.ack_finalize",
+    [PROF_SERVER_GET1_METRICS_EMIT] = "server.get1.metrics_emit",
     [PROF_SERVER_GET2_ACK_TOTAL] = "server.get2.ack_total",
     [PROF_SERVER_GET2_COPY] = "server.get2.copy",
 };
 
+static const perf_report_node_t g_server_poll_dispatch_get1_children[] = {
+    {PROF_SERVER_POLL_DISPATCH_GET1_HASH_MISMATCH, "hash_mismatch", NULL, 0},
+};
+
+static const perf_report_node_t g_server_poll_dispatch_children[] = {
+    {PROF_SERVER_POLL_DISPATCH_PUT, "put", NULL, 0},
+    {PROF_SERVER_POLL_DISPATCH_GET1, "get1", g_server_poll_dispatch_get1_children, ARRAY_LEN(g_server_poll_dispatch_get1_children)},
+    {PROF_SERVER_POLL_DISPATCH_GET2, "get2", NULL, 0},
+};
+
 static const perf_report_node_t g_server_poll_slot_children[] = {
+    {PROF_SERVER_POLL_SLOT_LOAD, "slot_load", NULL, 0},
+    {PROF_SERVER_POLL_KEY_ALLOC, "key_alloc", NULL, 0},
     {PROF_SERVER_POLL_KEY_COPY, "key_copy", NULL, 0},
     {PROF_SERVER_POLL_KEY_HASH, "key_hash", NULL, 0},
+    {PROF_SERVER_POLL_DISPATCH_TOTAL, "dispatch", g_server_poll_dispatch_children, ARRAY_LEN(g_server_poll_dispatch_children)},
+    {PROF_SERVER_POLL_KEY_FREE, "key_free", NULL, 0},
+    {PROF_SERVER_POLL_BOOKKEEPING, "bookkeeping", NULL, 0},
 };
 
 static const perf_report_node_t g_server_put_gc_enqueue_children[] = {
@@ -69,8 +96,11 @@ static const perf_report_node_t g_server_get1_copy_bucket_branch_children[] = {
 };
 
 static const perf_report_node_t g_server_get1_ack_children[] = {
+    {PROF_SERVER_GET1_SETUP, "setup", NULL, 0},
+    {PROF_SERVER_GET1_WRITEBACK_INIT, "writeback_init", NULL, 0},
     {PROF_SERVER_GET1_COPY_BUCKET, "copy_bucket", g_server_get1_copy_bucket_branch_children, ARRAY_LEN(g_server_get1_copy_bucket_branch_children)},
     {PROF_SERVER_GET1_ACK_FINALIZE, "ack_finalize", NULL, 0},
+    {PROF_SERVER_GET1_METRICS_EMIT, "metrics_emit", NULL, 0},
 };
 
 static const perf_report_node_t g_server_get2_ack_children[] = {
