@@ -1,47 +1,39 @@
-#include <pthread.h>
+#include <immintrin.h>
 #include <malloc.h>
+#include <stdatomic.h>
+#include <time.h>
 #include "phase_2_queue.h"
 
 static queue_item_t *buffer;
-static size_t head;
-static size_t tail;
-static pthread_mutex_t mutex;
-static pthread_cond_t not_full;
-static pthread_cond_t not_empty;
+static _Atomic size_t head;
+static _Atomic size_t tail;
 
 void enqueue(queue_item_t item) {
-    pthread_mutex_lock(&mutex);
-    // Wait while queue is full
-    while (((head + 1) % QUEUE_SPACE) == tail) {
-        pthread_cond_wait(&not_full, &mutex);
+    // Single producer: publish the element only after the payload write is visible.
+    size_t local_head = atomic_load_explicit(&head, memory_order_relaxed);
+    size_t next_head = (local_head + 1) % QUEUE_SPACE;
+    while (next_head == atomic_load_explicit(&tail, memory_order_acquire)) {
+        _mm_pause();
     }
-    // Add item
-    buffer[head] = item;
-    head = (head + 1) % QUEUE_SPACE;
-    // Signal any waiting consumer
-    pthread_cond_signal(&not_empty);
-    pthread_mutex_unlock(&mutex);
+
+    buffer[local_head] = item;
+    atomic_store_explicit(&head, next_head, memory_order_release);
 }
 
 queue_item_t dequeue(void) {
-    pthread_mutex_lock(&mutex);
-    // Wait while queue is empty
-    while (head == tail) {
-        pthread_cond_wait(&not_empty, &mutex);
+    // Single consumer: read the payload only after observing published head.
+    size_t local_tail = atomic_load_explicit(&tail, memory_order_relaxed);
+    while (atomic_load_explicit(&head, memory_order_acquire) == local_tail) {
+        _mm_pause();
     }
-    // Remove item
-    queue_item_t item = buffer[tail];
-    tail = (tail + 1) % QUEUE_SPACE;
-    // Signal any waiting producer
-    pthread_cond_signal(&not_full);
-    pthread_mutex_unlock(&mutex);
+
+    queue_item_t item = buffer[local_tail];
+    atomic_store_explicit(&tail, (local_tail + 1) % QUEUE_SPACE, memory_order_release);
     return item;
 }
 
 void queue_init(void) {
     buffer = malloc(QUEUE_SPACE * sizeof(queue_item_t));
-    head = tail = 0;
-    pthread_mutex_init(&mutex, NULL);
-    pthread_cond_init(&not_full, NULL);
-    pthread_cond_init(&not_empty, NULL);
+    atomic_init(&head, 0);
+    atomic_init(&tail, 0);
 }
