@@ -97,6 +97,10 @@ static void add_experiment_result(
 
 static void print_experiment_result_report(void) {
     printf("\n=== Client Experiment Summary ===\n");
+    printf("success statuses: %u, %u, %u\n",
+           PROMISE_SUCCESS,
+           PROMISE_SUCCESS_PH1,
+           PROMISE_SUCCESS_PH2);
     printf("%-8s %-16s %10s %14s %12s %12s %12s %10s\n",
            "dist",
            "workload",
