@@ -29,7 +29,6 @@ typedef struct {
     uint32_t ack_region_space;
     uint32_t free_ack_offset;
     uint32_t oldest_ack_offset;
-    _Atomic uint32_t pending_headers;
 } ack_allocator_shard_t;
 
 static ack_allocator_shard_t ack_shards[ACK_ALLOC_SHARDS];
@@ -112,7 +111,6 @@ void init_ack_region(sci_desc_t sd) {
         shard->ack_region_space = shard_partition_size(ACK_REGION_DATA_SIZE, shard_index);
         shard->free_ack_offset = 0;
         shard->oldest_ack_offset = 0;
-        atomic_store_explicit(&shard->pending_headers, 0, memory_order_relaxed);
 
         if (shard->header_count < 2 || shard->data_region_space == 0 || shard->ack_region_space == 0) {
             fprintf(stderr, "Illegal shard sizing for shard %u\n", shard_index);
@@ -285,7 +283,6 @@ ack_slot_t *get_ack_slot_blocking(enum request_type request_type, uint8_t key_le
                 shard->free_data_offset = new_free_data_offset;
                 shard->free_ack_offset = new_free_ack_offset;
                 shard->free_header_slot = next_free_header_slot;
-                atomic_fetch_add_explicit(&shard->pending_headers, 1, memory_order_relaxed);
                 atomic_fetch_or_explicit(&active_shard_mask, 1u << shard_id, memory_order_release);
                 commit_ns += perf_now_ns() - commit_start_ns;
             }
@@ -371,6 +368,15 @@ void *ack_thread(__attribute__((unused)) void *_args) {
         }
 
         if (shard_id < 0) {
+            ack_allocator_shard_t *probe_shard = &ack_shards[shard_cursor];
+            pthread_mutex_lock(&probe_shard->mutex);
+            bool probe_has_pending = probe_shard->oldest_header_slot != probe_shard->free_header_slot;
+            pthread_mutex_unlock(&probe_shard->mutex);
+            if (probe_has_pending) {
+                atomic_fetch_or_explicit(&active_shard_mask, 1u << shard_cursor, memory_order_release);
+            } else {
+                shard_cursor = (shard_cursor + 1u) % ACK_ALLOC_SHARDS;
+            }
             _mm_pause();
             continue;
         }
@@ -389,11 +395,12 @@ void *ack_thread(__attribute__((unused)) void *_args) {
                 has_pending = true;
                 local_oldest_header_slot = shard->oldest_header_slot;
                 global_header_slot = shard->header_base + local_oldest_header_slot;
+            } else {
+                atomic_fetch_and_explicit(&active_shard_mask, ~(1u << (uint32_t) shard_id), memory_order_release);
             }
             pthread_mutex_unlock(&shard->mutex);
 
             if (!has_pending) {
-                atomic_fetch_and_explicit(&active_shard_mask, ~(1u << (uint32_t) shard_id), memory_order_release);
                 break;
             }
 
@@ -426,9 +433,7 @@ void *ack_thread(__attribute__((unused)) void *_args) {
                 shard->oldest_header_slot = (shard->oldest_header_slot + 1) % shard->header_count;
                 shard->oldest_data_offset = (shard->oldest_data_offset + ack_slot->data_size) % shard->data_region_space;
                 shard->oldest_ack_offset = (shard->oldest_ack_offset + ack_slot->ack_data_size) % shard->ack_region_space;
-
-                uint32_t previous_pending = atomic_fetch_sub_explicit(&shard->pending_headers, 1, memory_order_relaxed);
-                if (previous_pending <= 1) {
+                if (shard->oldest_header_slot == shard->free_header_slot) {
                     atomic_fetch_and_explicit(&active_shard_mask, ~(1u << (uint32_t) shard_id), memory_order_release);
                 }
             }
