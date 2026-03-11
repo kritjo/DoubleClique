@@ -6,7 +6,7 @@
 #include "request_region.h"
 #include "ack_region.h"
 
-#define PUT_TIMEOUT_NS 60000
+#define PUT_TIMEOUT_NS 1000000000
 
 void init_put(void);
 request_promise_t *put_blocking_until_available_put_request_region_slot(const char *key, uint8_t key_len, void *value, uint32_t value_len);

@@ -1,7 +1,7 @@
 #ifndef DOUBLECLIQUE_2_PHASE_2_SIDED_H
 #define DOUBLECLIQUE_2_PHASE_2_SIDED_H
 
-#define GET_TIMEOUT_2_SIDED_NS 60000
+#define GET_TIMEOUT_2_SIDED_NS 1000000000
 
 #include <stdint.h>
 #include "main.h"
