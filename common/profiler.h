@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 #ifndef PERF_ENABLED
-#define PERF_ENABLED 1
+#define PERF_ENABLED 0
 #endif
 
 typedef struct perf_report_node {
