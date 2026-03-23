@@ -1,3 +1,5 @@
+Migrated to [https://github.com/DolphinICS/DoubleClique](https://github.com/DolphinICS/DoubleClique).
+
 # DoubleClique
 
 DoubleClique is a high‑performance, **in‑memory, replicated key–value store** that runs on Dolphin’s PCIe interconnect using the SISCI API.
